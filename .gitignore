@@ -1,0 +1,60 @@
+# ── Secrets & local config ─────────────────────────────────────────────────
+# Anything that could hold a real credential. .env.example files are templates
+# meant to be committed, so they're explicitly re-included below.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.npmrc
+.netrc
+.aws/
+credentials.json
+service-account*.json
+
+# Local databases that might get created during ad-hoc/non-Docker runs.
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Logs ───────────────────────────────────────────────────────────────────
+*.log
+
+# ── Runtime data (bot session, etc.) ───────────────────────────────────────
+picoclaw-data/
+
+# ── OS / editor cruft ───────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local session data
+.claude/
+
+# ── Go: backend build artifacts, test/coverage output ──────────────────────
+backend/bin/
+backend/build/
+*.test
+*.out
+coverage.txt
+
+# ── Frontend build/deps ─────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# ── PicoClaw: local (non-Docker) build output, if ever built outside the
+# container ──────────────────────────────────────────────────────────────────
+picoclaw/build/
+picoclaw/.picoclaw/
+
+# ── Safety net: any stray node_modules anywhere in the repo (picoclaw/web
+# has its own .gitignore for its build output — not duplicated here to avoid
+# clobbering its deliberate dist/.gitkeep exception) ───────────────────────
+node_modules/
+**/node_modules/

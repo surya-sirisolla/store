@@ -1,0 +1,64 @@
+{
+  "version": 3,
+  "agents": {
+    "defaults": {
+      "workspace": "~/.picoclaw/workspace",
+      "restrict_to_workspace": true,
+      "model_name": "",
+      "model_fallbacks": [],
+      "max_tokens": 4096,
+      "max_tool_iterations": 3
+    }
+  },
+  "model_list": [],
+  "channel_list": {
+    "whatsapp_native": {
+      "enabled": true,
+      "type": "whatsapp_native",
+      "allow_from": [],
+      "settings": {
+        "use_native": true,
+        "session_store_path": "/root/.picoclaw/whatsapp"
+      }
+    }
+  },
+  "tools": {
+    "mcp": {
+      "enabled": true,
+      "servers": {
+        "store": {
+          "enabled": true,
+          "type": "http",
+          "url": "http://store-mcp:9090/mcp"
+        }
+      }
+    },
+    "message": { "enabled": true },
+    "cron": { "enabled": false },
+    "exec": { "enabled": false },
+    "read_file": { "enabled": false },
+    "write_file": { "enabled": false },
+    "edit_file": { "enabled": false },
+    "append_file": { "enabled": false },
+    "list_dir": { "enabled": false },
+    "load_image": { "enabled": false },
+    "send_file": { "enabled": false },
+    "send_tts": { "enabled": false },
+    "web": { "enabled": false },
+    "web_fetch": { "enabled": false },
+    "skills": { "enabled": false },
+    "find_skills": { "enabled": false },
+    "install_skill": { "enabled": false },
+    "spawn": { "enabled": false },
+    "spawn_status": { "enabled": false },
+    "subagent": { "enabled": false },
+    "i2c": { "enabled": false },
+    "spi": { "enabled": false },
+    "serial": { "enabled": false }
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790,
+    "log_level": "info"
+  }
+}

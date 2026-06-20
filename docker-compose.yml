@@ -1,0 +1,140 @@
+name: business-bot
+
+services:
+  # ── Database ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: bb_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-storeuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-storepass}
+      POSTGRES_DB: ${DB_NAME:-storedb}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-storeuser} -d ${DB_NAME:-storedb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── API server (Owner console backend) ────────────────────────────────────
+  store-backend:
+    build: ./backend
+    container_name: bb_backend
+    command: ["server"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-storeuser}
+      DB_PASSWORD: ${DB_PASSWORD:-storepass}
+      DB_NAME: ${DB_NAME:-storedb}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OWNER_NAME: ${OWNER_NAME:-Owner}
+      OWNER_EMAIL: ${OWNER_EMAIL:-owner@business.local}
+      PORT: "8080"
+      PICOCLAW_LOG_PATH: /shared/picoclaw.log
+      ANTHROPIC_KEY_FILE: /shared/anthropic_key
+      LLM_KEYS_FILE: /shared/llm_keys.json
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-store-internal}
+    # Lets the backend reach a local LLM (Ollama/LM Studio) on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - bot_state:/shared
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── MCP server (directory exposed to the bot) ─────────────────────────────
+  store-mcp:
+    build: ./backend
+    container_name: bb_mcp
+    command: ["mcp"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-storeuser}
+      DB_PASSWORD: ${DB_PASSWORD:-storepass}
+      DB_NAME: ${DB_NAME:-storedb}
+      MCP_PORT: "9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      store-backend:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Owner console (web UI) ────────────────────────────────────────────────
+  store-frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8080}
+    container_name: bb_frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - store-backend
+    restart: unless-stopped
+
+  # ── WhatsApp agent (PicoClaw) ─────────────────────────────────────────────
+  picoclaw:
+    build:
+      context: ./picoclaw
+      # Build with the `whatsapp_native` tag so the QR-pairing WhatsApp channel
+      # is compiled in (the stock Dockerfile omits it, leaving only the
+      # bridge-based channel). Otherwise mirrors picoclaw/docker/Dockerfile.
+      dockerfile_inline: |
+        FROM golang:1.25-alpine AS builder
+        RUN apk add --no-cache git make
+        WORKDIR /src
+        COPY go.mod go.sum ./
+        RUN go mod download
+        COPY . .
+        # Emit the raw QR string and login events on their own log lines so our
+        # backend can surface WhatsApp pairing status + a crisp QR in the console.
+        RUN sed -i 's#logger.InfoCF("whatsapp", "Scan this QR code with WhatsApp (Linked Devices):", nil)#logger.InfoCF("whatsapp", "Scan this QR code with WhatsApp (Linked Devices):", nil); logger.InfoCF("whatsapp", "WHATSAPP_QR_CODE="+evt.Code, nil)#' pkg/channels/whatsapp_native/whatsapp_native.go && \
+            sed -i 's#logger.InfoCF("whatsapp", "WhatsApp login event", map\[string\]any{"event": evt.Event})#logger.InfoCF("whatsapp", "WHATSAPP_LOGIN_EVENT="+evt.Event, nil)#' pkg/channels/whatsapp_native/whatsapp_native.go && \
+            sed -i 's#case \*events\.Disconnected:#case *events.LoggedOut: logger.InfoCF("whatsapp", "WHATSAPP_LOGGED_OUT", nil); return; case *events.Disconnected:#' pkg/channels/whatsapp_native/whatsapp_native.go
+        # Make billing/quota errors (e.g. Anthropic's HTTP-400 "credit balance too
+        # low") trigger provider failover. By default a 400 is classified as a
+        # non-retriable "format" error before the billing message is ever checked,
+        # so the fallback provider would never kick in for credit exhaustion.
+        RUN sed -i 's#\t// Try HTTP status code extraction first.#\tif r := classifyByMessage(msg); r == FailoverBilling || r == FailoverRateLimit { return \&FailoverError{Reason: r, Provider: provider, Model: model, Wrapped: err} }\n\t// Try HTTP status code extraction first.#' pkg/providers/error_classifier.go
+        RUN make build GO_BUILD_TAGS=goolm,stdjson,whatsapp_native
+        FROM alpine:3.23
+        RUN apk add --no-cache ca-certificates tzdata curl jq
+        COPY --from=builder /src/build/picoclaw /usr/local/bin/picoclaw
+    container_name: bb_picoclaw
+    entrypoint: ["/bin/sh", "/init/picoclaw-init.sh"]
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TZ: ${TZ:-UTC}
+      CONTACT_INGEST_URL: http://store-backend:8080/internal/bot/contact-seen
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-store-internal}
+    # Lets the bot reach a local LLM (Ollama/LM Studio) on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./picoclaw-config:/init:ro
+      - picoclaw_data:/root/.picoclaw
+      - bot_state:/shared
+    ports:
+      - "${PICOCLAW_PORT:-18790}:18790"
+    depends_on:
+      - store-mcp
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  picoclaw_data:
+  bot_state:

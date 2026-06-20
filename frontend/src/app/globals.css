@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+/*
+ * Dark theme. Semantic tokens drive the whole console — change an accent or a
+ * surface here and it propagates everywhere. Utility names: bg-bg, bg-panel,
+ * bg-panel-2, border-line, border-line-2, text-ink, text-muted, text-subtle,
+ * bg-accent, text-accent, bg-accent-strong.
+ */
+@theme {
+  --color-bg: #0a0c10;
+  --color-panel: #14171d;
+  --color-panel-2: #1b1f28;
+  --color-line: #262b34;
+  --color-line-2: #333b48;
+  --color-ink: #e8ebf1;
+  --color-muted: #9aa3b2;
+  --color-subtle: #6b7480;
+  --color-accent: #34d399;
+  --color-accent-strong: #10b981;
+  --color-accent-ink: #04231a;
+  --color-danger: #f87171;
+  --color-danger-strong: #ef4444;
+  --color-warn: #fbbf24;
+  --font-sans: var(--font-poppins);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-poppins), system-ui, Arial, sans-serif;
+}
+
+/* Form controls on dark surfaces. */
+input,
+select,
+textarea {
+  color: var(--color-ink);
+  background-color: var(--color-panel-2);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-subtle);
+}
+
+option {
+  color: var(--color-ink);
+  background-color: #14171d;
+}
+
+/* Thin, themed scrollbars so panels feel native to the dark UI. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-2) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-2);
+  border-radius: 9999px;
+}
