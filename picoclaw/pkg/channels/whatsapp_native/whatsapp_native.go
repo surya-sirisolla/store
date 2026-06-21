@@ -395,6 +395,13 @@ func (c *WhatsAppNativeChannel) handleIncoming(evt *events.Message) {
 	if evt.Message == nil {
 		return
 	}
+	// Status posts and broadcast lists arrive as ordinary *events.Message with
+	// Chat == status@broadcast (or another broadcast JID). They aren't a real
+	// chat with the bot, so treating them as inbound would log the poster as a
+	// Contact and make the agent try to "reply" to their status.
+	if evt.Info.Chat.Server == types.BroadcastServer {
+		return
+	}
 	senderID := evt.Info.Sender.String()
 	chatID := evt.Info.Chat.String()
 	content := evt.Message.GetConversation()

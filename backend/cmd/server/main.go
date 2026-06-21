@@ -42,6 +42,7 @@ func main() {
 	waH := handlers.NewWhatsAppHandler(cfg.PicoclawLogPath, cfg.LLMKeysFile, cfg.BotDisabledFile)
 	settingsH := handlers.NewSettingsHandler(cfg.LLMKeysFile)
 	ingestH := handlers.NewIngestHandler(st, cfg.InternalToken)
+	assistantH := handlers.NewAssistantHandler(cfg.PicoclawURL, cfg.InternalToken)
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -94,6 +95,9 @@ func main() {
 		api.GET("/bot/whatsapp/status", waH.Status)
 		api.POST("/bot/whatsapp/enable", waH.Enable)
 		api.POST("/bot/whatsapp/disable", waH.Disable)
+
+		api.POST("/assistant/chat", assistantH.Chat)
+		api.GET("/assistant/status", assistantH.Status)
 
 		api.GET("/settings/llm-keys", settingsH.GetLLMKeys)
 		api.PUT("/settings/llm-keys", settingsH.SetLLMKeys)

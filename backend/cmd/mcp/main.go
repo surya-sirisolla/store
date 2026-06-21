@@ -26,6 +26,14 @@ import (
 	"store/backend/internal/store"
 )
 
+// ownerCaller is the sentinel "_caller" the PicoClaw console channel injects for
+// the owner web chat. It unlocks the staff-only tools without requiring the
+// owner to register a phone. MUST stay in sync with the sentinel in
+// picoclaw/pkg/channels/console/console.go. Safe because the MCP server is only
+// reachable on the docker network and "_caller" is set by the trusted channel,
+// not the model.
+const ownerCaller = "console-owner"
+
 // callerPhone reads the trusted "_caller" argument that PicoClaw injects from
 // the WhatsApp-authenticated sender. Empty if the call came from a channel that
 // doesn't supply it. The model cannot set this argument.
@@ -153,6 +161,9 @@ func registerTools(s *server.MCPServer, st *store.Store) {
 func registerStaffTools(s *server.MCPServer, st *store.Store) {
 	denyIfNotStaff := func(ctx context.Context, req mcp.CallToolRequest) *mcp.CallToolResult {
 		caller := callerPhone(req)
+		if caller == ownerCaller {
+			return nil // the owner console is always trusted
+		}
 		if caller == "" || !st.IsStaffPhone(ctx, caller) {
 			return mcp.NewToolResultError("This information is only available to staff. Ask the owner to add your WhatsApp number under Staff.")
 		}

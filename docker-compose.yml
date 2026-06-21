@@ -37,6 +37,8 @@ services:
       ANTHROPIC_KEY_FILE: /shared/anthropic_key
       LLM_KEYS_FILE: /shared/llm_keys.json
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-store-internal}
+      # Owner-console assistant proxies chat to PicoClaw's console channel.
+      PICOCLAW_URL: http://picoclaw:18790
     # Lets the backend reach a local LLM (Ollama/LM Studio) on the host.
     extra_hosts:
       - "host.docker.internal:host-gateway"

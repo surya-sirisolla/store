@@ -11,6 +11,7 @@ import {
   Building2,
   Smartphone,
   Bot,
+  Sparkles,
 } from "lucide-react";
 
 interface NavItem {
@@ -27,6 +28,7 @@ const sections: NavSection[] = [
   {
     items: [
       { href: "/admin/dashboard", label: "Dashboard", icon: <LayoutDashboard size={18} /> },
+      { href: "/admin/assistant", label: "Assistant", icon: <Sparkles size={18} /> },
     ],
   },
   {

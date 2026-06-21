@@ -124,7 +124,7 @@ export default function WhatsAppPage() {
   const isDisabled = status === "disabled";
 
   return (
-    <div className="max-w-5xl">
+    <div>
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2.5"><Smartphone size={22} className="text-accent" /> WhatsApp</h1>
@@ -240,7 +240,7 @@ export default function WhatsAppPage() {
               ))}
             </div>
           </div>
-          <div className="space-y-1 max-h-[28rem] overflow-auto -mx-2 px-2">
+          <div className="space-y-1 max-h-112 overflow-auto -mx-2 px-2">
             {contacts.length === 0 && (
               <p className="text-sm text-subtle py-8 text-center">
                 {range === "all" ? "No one has messaged yet. Once people message your WhatsApp, each number shows up here with their history." : "No one messaged in this period."}
@@ -268,7 +268,7 @@ export default function WhatsAppPage() {
 
         <div className="bg-panel rounded-xl border border-line p-5">
           <h2 className="font-semibold text-ink mb-3">Alert Requests (waitlist)</h2>
-          <div className="space-y-2 max-h-[28rem] overflow-auto">
+          <div className="space-y-2 max-h-112 overflow-auto">
             {alerts.length === 0 && <p className="text-sm text-subtle py-8 text-center">No alert requests. When the bot can&apos;t find something, customers can ask to be notified — those land here.</p>}
             {alerts.map((al) => (
               <div key={al.id} className="border border-line rounded-lg p-3 bg-panel-2/40">

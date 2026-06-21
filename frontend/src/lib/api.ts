@@ -67,6 +67,11 @@ export const getAlerts = (status?: string) =>
 export const markAlertNotified = (id: number) =>
   api.patch(`/api/bot/alerts/${id}/notified`);
 
+// ── Owner assistant (chat with the bot's brain about your data) ───────────────
+export const assistantChat = (message: string, sessionId: string) =>
+  api.post("/api/assistant/chat", { message, session_id: sessionId });
+export const getAssistantStatus = () => api.get("/api/assistant/status");
+
 // ── WhatsApp connection ───────────────────────────────────────────────────────
 export const getWhatsAppStatus = () => api.get("/api/bot/whatsapp/status");
 export const enableBot = () => api.post("/api/bot/whatsapp/enable");

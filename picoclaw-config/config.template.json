@@ -7,7 +7,7 @@
       "model_name": "",
       "model_fallbacks": [],
       "max_tokens": 4096,
-      "max_tool_iterations": 3
+      "max_tool_iterations": 5
     }
   },
   "model_list": [],
@@ -19,6 +19,14 @@
       "settings": {
         "use_native": true,
         "session_store_path": "/root/.picoclaw/whatsapp"
+      }
+    },
+    "console": {
+      "enabled": true,
+      "type": "console",
+      "allow_from": ["*"],
+      "settings": {
+        "timeout_seconds": 90
       }
     }
   },

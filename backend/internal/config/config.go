@@ -36,6 +36,10 @@ type Config struct {
 	// InternalToken guards internal-only endpoints (e.g. the bot's contact
 	// ingestion) that are reachable on the docker network but not user-facing.
 	InternalToken string
+
+	// PicoclawURL is the base URL of the PicoClaw gateway on the docker network.
+	// The owner-console assistant proxies chat to its console channel.
+	PicoclawURL string
 }
 
 func Load() *Config {
@@ -54,6 +58,7 @@ func Load() *Config {
 		LLMKeysFile:      getEnv("LLM_KEYS_FILE", "/shared/llm_keys.json"),
 		BotDisabledFile:  getEnv("BOT_DISABLED_FILE", "/shared/bot_disabled"),
 		InternalToken:    getEnv("INTERNAL_TOKEN", "store-internal"),
+		PicoclawURL:      getEnv("PICOCLAW_URL", "http://picoclaw:18790"),
 	}
 }
 
