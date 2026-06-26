@@ -1,0 +1,25 @@
+# Normalize line endings so the project works identically on Windows, macOS and
+# Linux. Scripts that run via a shebang or inside the Linux containers MUST stay
+# LF — CRLF breaks the interpreter ("bad interpreter" / "env not found") and the
+# picoclaw container entrypoint.
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.bash      text eol=lf
+Dockerfile  text eol=lf
+*.Dockerfile text eol=lf
+.env.example text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Binary assets — never normalize.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.xlsx binary
+*.woff binary
+*.woff2 binary

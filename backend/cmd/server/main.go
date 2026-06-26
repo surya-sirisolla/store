@@ -22,6 +22,7 @@ func main() {
 	godotenv.Load()
 
 	cfg := config.Load()
+	requireAuthSecrets(cfg)
 	database := db.Connect(cfg.DSN())
 	seedOwner(database, cfg)
 
@@ -43,6 +44,7 @@ func main() {
 	settingsH := handlers.NewSettingsHandler(cfg.LLMKeysFile)
 	ingestH := handlers.NewIngestHandler(st, cfg.InternalToken)
 	assistantH := handlers.NewAssistantHandler(cfg.PicoclawURL, cfg.InternalToken)
+	authH := handlers.NewAuthHandler(cfg.OwnerPassword, cfg.JWTSecret)
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -56,9 +58,13 @@ func main() {
 	// Internal: the bot reports every inbound message here (token-guarded).
 	r.POST("/internal/bot/contact-seen", ingestH.ContactSeen)
 
-	// Single-operator console: no login, the API is open like PicoClaw itself
-	// (config/keys gate what it can do, not a session).
+	// Login is the one public /api route; everything else requires the
+	// session token it issues.
+	r.POST("/api/auth/login", authH.Login)
+
+	// Single-operator console, gated behind the shared admin password.
 	api := r.Group("/api")
+	api.Use(handlers.RequireAuth(cfg.JWTSecret))
 	{
 		api.GET("/stats", consoleH.Stats)
 
@@ -111,10 +117,22 @@ func main() {
 	}
 }
 
+// requireAuthSecrets fails fast if the console would otherwise boot without a
+// real password or a stable signing secret — generating one ephemerally would
+// either be guessable or change (and invalidate every session) on restart.
+func requireAuthSecrets(cfg *config.Config) {
+	if cfg.OwnerPassword == "" {
+		log.Fatal("OWNER_PASSWORD is not set. Set it in .env before starting the console (this is the password used to log in).")
+	}
+	if cfg.JWTSecret == "" {
+		log.Fatal("JWT_SECRET is not set. Set it in .env before starting the console, e.g.: openssl rand -hex 32")
+	}
+}
+
 // seedOwner creates the single owner record on first boot from env config. It
-// has no password — there's no login — it just labels who the owner is for
-// staff stats and lets the owner's own phone (set later under Staff/Business
-// Profile) be recognized by the bot like any other staff number.
+// just labels who the owner is for staff stats and lets the owner's own
+// phone (set later under Staff/Business Profile) be recognized by the bot
+// like any other staff number — login is gated separately by OWNER_PASSWORD.
 func seedOwner(database *gorm.DB, cfg *config.Config) {
 	var count int64
 	database.Model(&models.User{}).Where("role = ?", models.RoleOwner).Count(&count)

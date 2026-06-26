@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   Store,
@@ -12,7 +12,9 @@ import {
   Smartphone,
   Bot,
   Sparkles,
+  LogOut,
 } from "lucide-react";
+import { clearToken } from "@/lib/auth";
 
 interface NavItem {
   href: string;
@@ -57,6 +59,12 @@ const sections: NavSection[] = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  function handleLogout() {
+    clearToken();
+    router.push("/login");
+  }
 
   return (
     <aside className="w-60 min-h-screen bg-panel border-r border-line flex flex-col sticky top-0 h-screen">
@@ -96,6 +104,16 @@ export default function Sidebar() {
           </div>
         ))}
       </nav>
+
+      <div className="px-3 py-4 border-t border-line">
+        <button
+          onClick={handleLogout}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-muted hover:bg-panel-2 hover:text-ink transition"
+        >
+          <LogOut size={18} />
+          Log out
+        </button>
+      </div>
     </aside>
   );
 }

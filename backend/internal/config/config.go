@@ -40,6 +40,13 @@ type Config struct {
 	// PicoclawURL is the base URL of the PicoClaw gateway on the docker network.
 	// The owner-console assistant proxies chat to its console channel.
 	PicoclawURL string
+
+	// OwnerPassword gates the owner-console login (POST /api/auth/login). Set
+	// this before exposing the console publicly.
+	OwnerPassword string
+
+	// JWTSecret signs the session tokens issued at login.
+	JWTSecret string
 }
 
 func Load() *Config {
@@ -59,6 +66,8 @@ func Load() *Config {
 		BotDisabledFile:  getEnv("BOT_DISABLED_FILE", "/shared/bot_disabled"),
 		InternalToken:    getEnv("INTERNAL_TOKEN", "store-internal"),
 		PicoclawURL:      getEnv("PICOCLAW_URL", "http://picoclaw:18790"),
+		OwnerPassword:    getEnv("OWNER_PASSWORD", ""),
+		JWTSecret:        getEnv("JWT_SECRET", ""),
 	}
 }
 

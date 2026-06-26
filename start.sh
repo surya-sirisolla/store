@@ -28,6 +28,12 @@ fi
 if [ "$1" = "dev" ]; then
   echo -e "${CYAN}Building and starting everything except the frontend…${NC}"
   docker compose up -d --build --scale store-frontend=0
+  # The Docker frontend has `restart: unless-stopped`, so a previous full
+  # `./start.sh` run leaves bb_frontend holding port 3000. Stop & remove it so
+  # the local hot-reload dev server below can bind the port (otherwise it
+  # crashes with EADDRINUSE and the browser shows the stale Docker build).
+  docker compose stop store-frontend >/dev/null 2>&1 || true
+  docker compose rm -f store-frontend >/dev/null 2>&1 || true
 
   echo ""
   docker compose ps
