@@ -53,6 +53,7 @@ const (
 	markerQR        = "WHATSAPP_QR_CODE="
 	markerLogin     = "WHATSAPP_LOGIN_EVENT="
 	markerConnected = "WhatsApp native channel connected"
+	markerOwnNumber = "WHATSAPP_OWN_NUMBER="
 	markerLoggedOut = "WHATSAPP_LOGGED_OUT"
 	markerKeyErr    = "api_key is required"
 )
@@ -82,6 +83,7 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 	}
 
 	qr := ""
+	ownNumber := ""
 	qrIdx, loginSuccessIdx, connIdx, loggedOutIdx, keyErrIdx := -1, -1, -1, -1, -1
 
 	for i, raw := range strings.Split(string(data), "\n") {
@@ -91,6 +93,13 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 			if f := strings.Fields(rest); len(f) > 0 {
 				qr = f[0]
 				qrIdx = i
+			}
+		}
+		// The bot logs its own number on every (re)connect; the last one wins.
+		if idx := strings.Index(line, markerOwnNumber); idx >= 0 {
+			rest := strings.TrimSpace(line[idx+len(markerOwnNumber):])
+			if f := strings.Fields(rest); len(f) > 0 {
+				ownNumber = f[0]
 			}
 		}
 		if idx := strings.Index(line, markerLogin); idx >= 0 {
@@ -147,7 +156,15 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 			"detail": "Anthropic API key missing or invalid — set ANTHROPIC_API_KEY in .env and restart.",
 		})
 	case "connected":
-		c.JSON(http.StatusOK, gin.H{"status": "connected"})
+		resp := gin.H{"status": "connected"}
+		// Once we know the linked number, hand the console a wa.me link the
+		// owner can share so any unknown number can start a chat with the bot.
+		if ownNumber != "" {
+			digits := strings.TrimPrefix(ownNumber, "+")
+			resp["number"] = "+" + digits
+			resp["chat_link"] = "https://wa.me/" + digits
+		}
+		c.JSON(http.StatusOK, resp)
 	default:
 		c.JSON(http.StatusOK, gin.H{"status": "starting", "detail": "bot is starting"})
 	}

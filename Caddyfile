@@ -1,0 +1,11 @@
+:80 {
+	handle /api/* {
+		reverse_proxy store-backend:8080
+	}
+	handle /healthz {
+		reverse_proxy store-backend:8080
+	}
+	handle {
+		reverse_proxy store-frontend:3000
+	}
+}

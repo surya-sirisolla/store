@@ -1,8 +1,10 @@
 "use client";
 import { useEffect, useState } from "react";
-import { getListings, getCategories, createListing, updateListing, deleteListing } from "@/lib/api";
+import {
+  getListings, getCategories, createListing, updateListing, deleteListing,
+} from "@/lib/api";
 import Pagination from "@/components/Pagination";
-import { Plus, Trash2, Search, X, Minus } from "lucide-react";
+import { Plus, Trash2, Search, X, Minus, Star } from "lucide-react";
 
 const PAGE_SIZE = 15;
 
@@ -12,9 +14,14 @@ interface Listing {
   description: string;
   quantity?: number | null;
   price?: number | null;
+  hsn_code?: string | null;
+  unit?: string | null;
+  featured?: boolean;
+  offer_text?: string | null;
   category: { id: number; name: string };
   active: boolean;
 }
+
 interface Category { id: number; name: string; level: number; children?: Category[] }
 
 function flatCats(cats: Category[], result: Category[] = []): Category[] {
@@ -98,6 +105,32 @@ export default function ListingsPage() {
     }
   }
 
+  async function toggleFeatured(l: Listing) {
+    const next = !l.featured;
+    setListings((prev) => prev.map((x) => (x.id === l.id ? { ...x, featured: next } : x)));
+    try {
+      await updateListing(l.id, { featured: next });
+    } catch {
+      load();
+    }
+  }
+
+  const [offerDrafts, setOfferDrafts] = useState<Record<number, string>>({});
+  function offerValue(l: Listing) {
+    return offerDrafts[l.id] ?? (l.offer_text ?? "");
+  }
+  async function commitOffer(l: Listing) {
+    const raw = offerValue(l);
+    setOfferDrafts((d) => { const next = { ...d }; delete next[l.id]; return next; });
+    if (raw === (l.offer_text ?? "")) return;
+    setListings((prev) => prev.map((x) => (x.id === l.id ? { ...x, offer_text: raw } : x)));
+    try {
+      await updateListing(l.id, { offer_text: raw });
+    } catch {
+      load();
+    }
+  }
+
   const inputCls = "w-full bg-panel-2 border border-line rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/40";
 
   return (
@@ -107,9 +140,11 @@ export default function ListingsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Listings</h1>
           <p className="text-sm text-subtle mt-0.5">{total} item{total === 1 ? "" : "s"} in your directory</p>
         </div>
-        <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 bg-accent text-accent-ink hover:bg-accent-strong text-sm font-medium px-4 py-2 rounded-lg transition">
-          <Plus size={16} /> Add Listing
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 bg-accent text-accent-ink hover:bg-accent-strong text-sm font-medium px-4 py-2 rounded-lg transition">
+            <Plus size={16} /> Add Listing
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-3 mb-4">
@@ -150,9 +185,11 @@ export default function ListingsPage() {
           <thead className="bg-panel-2 text-subtle text-xs uppercase tracking-wide">
             <tr>
               <th className="text-left px-5 py-3 font-medium">Name</th>
+              <th className="text-left px-5 py-3 font-medium">HSN Code</th>
               <th className="text-left px-5 py-3 font-medium">Category</th>
               <th className="text-left px-5 py-3 font-medium">Qty</th>
               <th className="text-left px-5 py-3 font-medium">Price</th>
+              <th className="text-left px-5 py-3 font-medium">Offer</th>
               <th className="px-5 py-3"></th>
             </tr>
           </thead>
@@ -160,6 +197,7 @@ export default function ListingsPage() {
             {listings.map((l) => (
               <tr key={l.id} className="hover:bg-panel-2/60 transition">
                 <td className="px-5 py-3 font-medium text-ink">{l.name}</td>
+                <td className="px-5 py-3 text-muted tabular-nums">{l.hsn_code || "—"}</td>
                 <td className="px-5 py-3"><span className="text-xs bg-panel-2 text-muted border border-line rounded px-2 py-0.5">{l.category?.name}</span></td>
                 <td className="px-5 py-3">
                   <div className="inline-flex items-center gap-1.5 bg-panel-2 border border-line rounded-lg px-1 py-0.5">
@@ -185,12 +223,34 @@ export default function ListingsPage() {
                     />
                   </div>
                 </td>
+                <td className="px-5 py-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => toggleFeatured(l)}
+                      title={l.featured ? "Featured in reminders — click to remove" : "Mark as a featured offer for reminders"}
+                      className={`shrink-0 transition ${l.featured ? "text-amber-500" : "text-subtle hover:text-amber-500"}`}
+                      aria-label="Toggle featured"
+                    >
+                      <Star size={15} fill={l.featured ? "currentColor" : "none"} />
+                    </button>
+                    {l.featured && (
+                      <input
+                        type="text" placeholder="offer note"
+                        value={offerValue(l)}
+                        onChange={(e) => setOfferDrafts((d) => ({ ...d, [l.id]: e.target.value }))}
+                        onBlur={() => commitOffer(l)}
+                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                        className="w-28 bg-transparent border-b border-line focus:border-accent text-xs text-ink focus:outline-none px-1 py-0.5"
+                      />
+                    )}
+                  </div>
+                </td>
                 <td className="px-5 py-3 text-right">
                   <button onClick={() => handleDelete(l.id)} className="text-subtle hover:text-danger transition"><Trash2 size={15} /></button>
                 </td>
               </tr>
             ))}
-            {listings.length === 0 && <tr><td colSpan={5} className="px-5 py-10 text-center text-subtle">No listings found.</td></tr>}
+            {listings.length === 0 && <tr><td colSpan={7} className="px-5 py-10 text-center text-subtle">No listings found.</td></tr>}
           </tbody>
         </table>
       </div>

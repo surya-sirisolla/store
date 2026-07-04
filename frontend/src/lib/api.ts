@@ -36,6 +36,25 @@ export const getBusinessProfile = () => api.get("/api/business-profile");
 export const updateBusinessProfile = (data: object) =>
   api.put("/api/business-profile", data);
 
+// ── Business locations (godowns synced from Livekeeping) ───────────────────────
+export interface BusinessLocation {
+  id: number;
+  name: string;
+  address: string;
+  area: string;
+  city: string;
+  state: string;
+  pincode: string;
+  phone: string;
+  source_id?: string;
+  active: boolean;
+}
+export const getBusinessLocations = () => api.get("/api/business-locations");
+export const updateBusinessLocation = (
+  id: number,
+  data: Partial<Omit<BusinessLocation, "id" | "source_id">>,
+) => api.put(`/api/business-locations/${id}`, data);
+
 // ── Categories ────────────────────────────────────────────────────────────────
 export const getCategories = () => api.get("/api/categories");
 export const createCategory = (data: object) => api.post("/api/categories", data);
@@ -75,6 +94,51 @@ export const aiImportExcel = (file: File) => {
   return api.post("/api/bulk/ai-import", fd);
 };
 
+// ── Livekeeping stock sync ────────────────────────────────────────────────────
+export interface LivekeepingCreds {
+  token?: string;
+  company_id?: string;
+  user_id?: string;
+}
+export const getLivekeepingConfig = () => api.get("/api/integrations/livekeeping");
+export const saveLivekeepingConfig = (data: LivekeepingCreds) =>
+  api.put("/api/integrations/livekeeping", data);
+export const checkLivekeepingToken = () =>
+  api.post("/api/integrations/livekeeping/check");
+
+// ── Scheduled jobs (Automation) ───────────────────────────────────────────────
+export interface JobScheduleInput {
+  enabled: boolean;
+  schedule_kind: "manual" | "interval" | "daily";
+  interval_hours: number;
+  daily_time: string;
+}
+export const getJobs = () => api.get("/api/jobs");
+export const saveJobSchedule = (key: string, data: JobScheduleInput) =>
+  api.put(`/api/jobs/${key}/schedule`, data);
+export const runJob = (key: string) => api.post(`/api/jobs/${key}/run`);
+
+// Reminder/broadcast jobs (owner-created).
+export interface BroadcastConfig {
+  header?: string;
+  recipient_days?: number;
+  include_staff?: boolean;
+  max_items?: number;
+  throttle_seconds?: number;
+  daily_cap?: number;
+}
+export interface BroadcastInput {
+  name: string;
+  schedule: JobScheduleInput;
+  config: BroadcastConfig;
+}
+export const createJob = (data: BroadcastInput) => api.post("/api/jobs", data);
+export const updateJob = (key: string, data: BroadcastInput) =>
+  api.put(`/api/jobs/${key}`, data);
+export const deleteJob = (key: string) => api.delete(`/api/jobs/${key}`);
+export const previewBroadcast = (data: BroadcastInput) =>
+  api.post("/api/jobs/preview", data);
+
 // ── Staff (owner-only) ────────────────────────────────────────────────────────
 export const getStaff = () => api.get("/api/staff");
 export const createStaff = (data: object) => api.post("/api/staff", data);
@@ -84,10 +148,14 @@ export const deleteStaff = (id: number) => api.delete(`/api/staff/${id}`);
 export const getBotStats = () => api.get("/api/bot/stats");
 export const getBotContacts = (range?: string) =>
   api.get("/api/bot/contacts", { params: range ? { range } : {} });
+// ── Alerts (customer waitlist + restock-ready) ────────────────────────────────
+export type AlertStatus = "logged" | "ready" | "notified" | "dismissed";
 export const getAlerts = (status?: string) =>
-  api.get("/api/bot/alerts", { params: status ? { status } : {} });
-export const markAlertNotified = (id: number) =>
-  api.patch(`/api/bot/alerts/${id}/notified`);
+  api.get("/api/alerts", { params: status ? { status } : {} });
+export const getAlertCounts = () => api.get("/api/alerts/counts");
+export const setAlertStatus = (id: number, status: AlertStatus) =>
+  api.patch(`/api/alerts/${id}/status`, { status });
+export const recheckAlerts = () => api.post("/api/alerts/recheck");
 
 // ── Owner assistant (chat with the bot's brain about your data) ───────────────
 export const assistantChat = (message: string, sessionId: string) =>

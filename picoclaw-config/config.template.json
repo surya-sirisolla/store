@@ -6,6 +6,7 @@
       "restrict_to_workspace": true,
       "model_name": "",
       "model_fallbacks": [],
+      "context_window": 200000,
       "max_tokens": 4096,
       "max_tool_iterations": 5
     }

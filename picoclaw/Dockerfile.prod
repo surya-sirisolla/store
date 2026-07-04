@@ -1,0 +1,21 @@
+FROM golang:1.25-alpine AS builder
+RUN apk add --no-cache git make
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# Emit the raw QR string and login events on their own log lines so our
+# backend can surface WhatsApp pairing status + a crisp QR in the console.
+RUN sed -i 's#logger.InfoCF("whatsapp", "Scan this QR code with WhatsApp (Linked Devices):", nil)#logger.InfoCF("whatsapp", "Scan this QR code with WhatsApp (Linked Devices):", nil); logger.InfoCF("whatsapp", "WHATSAPP_QR_CODE="+evt.Code, nil)#' pkg/channels/whatsapp_native/whatsapp_native.go && \
+    sed -i 's#logger.InfoCF("whatsapp", "WhatsApp login event", map\[string\]any{"event": evt.Event})#logger.InfoCF("whatsapp", "WHATSAPP_LOGIN_EVENT="+evt.Event, nil)#' pkg/channels/whatsapp_native/whatsapp_native.go && \
+    sed -i 's#case \*events\.Disconnected:#case *events.LoggedOut: logger.InfoCF("whatsapp", "WHATSAPP_LOGGED_OUT", nil); return; case *events.Disconnected:#' pkg/channels/whatsapp_native/whatsapp_native.go && \
+    sed -i 's#switch v := evt.(type) {#switch v := evt.(type) {\n\tcase *events.Connected:\n\t\tif c.client != nil \&\& c.client.Store.ID != nil { logger.InfoCF("whatsapp", "WHATSAPP_OWN_NUMBER="+c.client.Store.ID.User, nil) }#' pkg/channels/whatsapp_native/whatsapp_native.go
+# Make billing/quota errors (e.g. Anthropic's HTTP-400 "credit balance too
+# low") trigger provider failover. By default a 400 is classified as a
+# non-retriable "format" error before the billing message is ever checked,
+# so the fallback provider would never kick in for credit exhaustion.
+RUN sed -i 's#\t// Try HTTP status code extraction first.#\tif r := classifyByMessage(msg); r == FailoverBilling || r == FailoverRateLimit { return \&FailoverError{Reason: r, Provider: provider, Model: model, Wrapped: err} }\n\t// Try HTTP status code extraction first.#' pkg/providers/error_classifier.go
+RUN make build GO_BUILD_TAGS=goolm,stdjson,whatsapp_native
+FROM alpine:3.23
+RUN apk add --no-cache ca-certificates tzdata curl jq
+COPY --from=builder /src/build/picoclaw /usr/local/bin/picoclaw

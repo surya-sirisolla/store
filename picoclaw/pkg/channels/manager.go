@@ -8,11 +8,13 @@ package channels
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -1112,6 +1114,11 @@ func (m *Manager) SetupHTTPServerListeners(listeners []net.Listener, addr string
 	// Discover and register webhook handlers and health checkers
 	m.registerHTTPHandlersLocked()
 
+	// Internal outbound-send endpoint: lets the trusted owner-console backend
+	// push a proactive message (e.g. a scheduled reminder) to a WhatsApp number.
+	// Guarded by the shared INTERNAL_TOKEN; only reachable on the docker network.
+	m.mux.HandleFunc("/internal/send", m.handleInternalSend)
+
 	m.httpServer = &http.Server{
 		Addr:         addr,
 		Handler:      m.mux,
@@ -1119,6 +1126,56 @@ func (m *Manager) SetupHTTPServerListeners(listeners []net.Listener, addr string
 		WriteTimeout: 30 * time.Second,
 	}
 	m.httpListeners = append([]net.Listener(nil), listeners...)
+}
+
+// handleInternalSend delivers a proactive outbound message requested by the
+// trusted backend. Body: {"to":"<phone or jid>","text":"...","channel":"..."}.
+// Defaults to the whatsapp_native channel. Auth is the shared INTERNAL_TOKEN via
+// the X-Internal-Token header (same secret the contact-ingest call uses).
+func (m *Manager) handleInternalSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := strings.TrimSpace(os.Getenv("INTERNAL_TOKEN"))
+	if token == "" || r.Header.Get("X-Internal-Token") != token {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		To      string `json:"to"`
+		Text    string `json:"text"`
+		Channel string `json:"channel"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	to := strings.TrimSpace(req.To)
+	text := strings.TrimSpace(req.Text)
+	if to == "" || text == "" {
+		http.Error(w, "to and text are required", http.StatusBadRequest)
+		return
+	}
+	channel := strings.TrimSpace(req.Channel)
+	if channel == "" {
+		channel = "whatsapp_native"
+	}
+
+	if err := m.SendMessage(r.Context(), bus.OutboundMessage{
+		Channel: channel,
+		ChatID:  to,
+		Content: text,
+	}); err != nil {
+		logger.WarnCF("channels", "Internal send failed", map[string]any{"to": to, "error": err.Error()})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // registerHTTPHandlersLocked registers webhook and health-check handlers for

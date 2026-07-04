@@ -12,6 +12,8 @@ import {
   Smartphone,
   Bot,
   Sparkles,
+  CalendarClock,
+  Bell,
   LogOut,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
@@ -39,13 +41,20 @@ const sections: NavSection[] = [
       { href: "/admin/business-profile", label: "Business Profile", icon: <Building2 size={18} /> },
       { href: "/admin/categories", label: "Categories", icon: <FolderTree size={18} /> },
       { href: "/admin/listings", label: "Listings", icon: <List size={18} /> },
-      { href: "/admin/bulk-upload", label: "Bulk Upload", icon: <Upload size={18} /> },
+      // { href: "/admin/bulk-upload", label: "Bulk Upload", icon: <Upload size={18} /> },
     ],
   },
   {
     header: "Channels",
     items: [
       { href: "/admin/whatsapp", label: "WhatsApp", icon: <Smartphone size={18} /> },
+      { href: "/admin/alerts", label: "Alerts", icon: <Bell size={18} /> },
+    ],
+  },
+  {
+    header: "Automation",
+    items: [
+      { href: "/admin/scheduled-jobs", label: "Scheduled Jobs", icon: <CalendarClock size={18} /> },
     ],
   },
   {

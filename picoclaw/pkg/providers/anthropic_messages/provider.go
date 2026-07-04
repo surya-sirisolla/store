@@ -231,14 +231,17 @@ func buildRequestBody(
 				})
 			}
 
-			// Add tool_use blocks
+			// Add tool_use blocks. Resolve name/args via NormalizeStoredToolCall so
+			// tool calls survive a session round-trip: after a reload the runtime
+			// tc.Name/tc.Arguments fields (json:"-") are empty and the data lives in
+			// tc.Function. Without this fallback the tool_use block is dropped and
+			// the following tool_result is orphaned — Anthropic then rejects the
+			// request with "tool_result must have a corresponding tool_use block".
 			for _, tc := range msg.ToolCalls {
-				if strings.TrimSpace(tc.Name) == "" {
+				name, input, _ := common.NormalizeStoredToolCall(tc)
+				if strings.TrimSpace(name) == "" {
 					continue
 				}
-
-				// Handle nil Arguments (GLM-4 may return null input)
-				input := tc.Arguments
 				if input == nil {
 					input = map[string]any{}
 				}
@@ -246,7 +249,7 @@ func buildRequestBody(
 				toolUse := map[string]any{
 					"type":  "tool_use",
 					"id":    tc.ID,
-					"name":  tc.Name,
+					"name":  name,
 					"input": input,
 				}
 				content = append(content, toolUse)

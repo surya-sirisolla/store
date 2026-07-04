@@ -32,7 +32,10 @@ func (h *ConsoleHandler) BotStats(c *gin.Context) {
 	h.db.Model(&models.BotActivity{}).Count(&totalQueries)
 	h.db.Model(&models.BotActivity{}).Where("created_at >= ?", startOfDay).Count(&queriesToday)
 	h.db.Model(&models.BotActivity{}).Where("tool = ?", "search_listings").Count(&searches)
-	h.db.Model(&models.AlertRequest{}).Where("status = ?", "logged").Count(&pendingAlerts)
+	// "Pending" = anything not yet actioned: still logged or raised-and-waiting.
+	h.db.Model(&models.AlertRequest{}).Where("status IN ?", []string{"logged", "ready"}).Count(&pendingAlerts)
+	var readyAlerts int64
+	h.db.Model(&models.AlertRequest{}).Where("status = ?", "ready").Count(&readyAlerts)
 	h.db.Model(&models.Contact{}).Count(&uniqueContacts)
 	h.db.Model(&models.Contact{}).Where("last_seen >= ?", startOfDay).Count(&contactsToday)
 
@@ -41,6 +44,7 @@ func (h *ConsoleHandler) BotStats(c *gin.Context) {
 		"interactions_today": queriesToday,
 		"searches":           searches,
 		"pending_alerts":     pendingAlerts,
+		"ready_alerts":       readyAlerts,
 		"unique_contacts":    uniqueContacts,
 		"contacts_today":     contactsToday,
 	})
@@ -81,26 +85,3 @@ func (h *ConsoleHandler) BotActivityFeed(c *gin.Context) {
 	c.JSON(http.StatusOK, items)
 }
 
-// ListAlerts returns the alert/waitlist requests captured by the bot.
-func (h *ConsoleHandler) ListAlerts(c *gin.Context) {
-	items := []models.AlertRequest{}
-	q := h.db.Order("created_at DESC")
-	if status := c.Query("status"); status != "" {
-		q = q.Where("status = ?", status)
-	}
-	q.Limit(200).Find(&items)
-	c.JSON(http.StatusOK, items)
-}
-
-// MarkAlertNotified flips an alert request to "notified" once the owner has
-// reached out to the customer.
-func (h *ConsoleHandler) MarkAlertNotified(c *gin.Context) {
-	res := h.db.Model(&models.AlertRequest{}).
-		Where("id = ?", c.Param("id")).
-		Update("status", "notified")
-	if res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "alert not found"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "marked notified"})
-}

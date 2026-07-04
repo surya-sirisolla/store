@@ -56,8 +56,9 @@ func main() {
 			"Tools to answer customer questions for this business from its directory. "+
 				"Use get_business_info for address/timings/contact; search_listings to find "+
 				"items/services/listings by keyword or category; list_categories to help the "+
-				"customer browse; request_alert ONLY after a customer explicitly agrees to be "+
-				"notified about something currently unavailable and gives their name and phone."),
+				"customer browse. When something isn't found or is out of stock, offer to notify "+
+				"the customer, and call request_alert once they agree — their WhatsApp number is "+
+				"filled in automatically, so you don't need to ask for it."),
 	)
 
 	registerTools(s, st)
@@ -72,7 +73,7 @@ func main() {
 func registerTools(s *server.MCPServer, st *store.Store) {
 	// get_business_info ─────────────────────────────────────────────────────────
 	s.AddTool(mcp.NewTool("get_business_info",
-		mcp.WithDescription("Get the business profile: name, address, area, city, opening hours, phone/WhatsApp and services offered."),
+		mcp.WithDescription("Get the business's contact profile (name, email, phone numbers, opening hours) and its branch locations. Each location has its own name and full address — use these to tell a customer which branch/shop stocks an item and where it is."),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		logActivity(st, "get_business_info", "", "profile requested", callerPhone(req))
 		p, err := st.GetBusinessProfile(ctx)
@@ -82,27 +83,100 @@ func registerTools(s *server.MCPServer, st *store.Store) {
 		if p == nil {
 			return mcp.NewToolResultError("business profile not set yet"), nil
 		}
-		return jsonResult(p)
+		// Curated, minimal profile — identity + contact only. Street addresses
+		// live on the branch locations below, not on the profile.
+		profile := map[string]any{"name": p.Name}
+		if strings.TrimSpace(p.Email) != "" {
+			profile["email"] = p.Email
+		}
+		if len(p.Phones) > 0 {
+			profile["phones"] = p.Phones
+		}
+		if strings.TrimSpace(p.Hours) != "" {
+			profile["hours"] = p.Hours
+		}
+		out := map[string]any{"profile": profile}
+
+		// Surface branch locations with a usable address so the bot can tell
+		// customers which shop stocks an item and where it is.
+		if locs, err := st.ListBusinessLocations(ctx); err == nil {
+			branches := make([]map[string]any, 0, len(locs))
+			for _, l := range locs {
+				if !l.Active {
+					continue
+				}
+				addr := locationAddress(l)
+				if addr == "" {
+					continue // no address entered yet — nothing useful to share
+				}
+				b := map[string]any{"name": l.Name, "address": addr}
+				if strings.TrimSpace(l.Phone) != "" {
+					b["phone"] = l.Phone
+				}
+				branches = append(branches, b)
+			}
+			if len(branches) > 0 {
+				out["locations"] = branches
+			}
+		}
+		return jsonResult(out)
 	})
 
 	// search_listings ────────────────────────────────────────────────────────────
 	s.AddTool(mcp.NewTool("search_listings",
-		mcp.WithDescription("Search the business's directory. Match listings by free-text keyword and/or an exact category. Returns matching listings with phone, address, description and any extra fields."),
+		mcp.WithDescription("Search the business's directory. Match listings by free-text keyword and/or an exact category. Returns matching listings; price and stock quantity are included only for staff/owner callers — for customers the result is name/category/description plus a contact number for price & availability, and out-of-stock items are hidden from customers entirely."),
 		mcp.WithString("query", mcp.Description("Free-text keyword, e.g. 'ceiling fan', 'cardiologist', '2.5 sq mm wire'.")),
 		mcp.WithString("category", mcp.Description("Exact category filter. Use list_categories for valid values.")),
 		mcp.WithString("limit", mcp.Description("Max results as a string, e.g. \"20\" (default 20).")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		query := req.GetString("query", "")
+		caller := callerPhone(req)
+		isStaff := caller == ownerCaller || st.IsStaffPhone(ctx, caller)
+
 		items, err := st.SearchListings(ctx, store.SearchParams{
 			Query:    query,
 			Category: req.GetString("category", ""),
 			Limit:    int(parseIntArg(req.GetString("limit", ""), 20)),
+			// Customers only ever see items that are actually in stock; staff/owner
+			// see everything (including out-of-stock) for inventory management.
+			InStock: !isStaff,
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		logActivity(st, "search_listings", query, fmt.Sprintf("%d results", len(items)), callerPhone(req))
-		return jsonResult(map[string]any{"count": len(items), "listings": items})
+		logActivity(st, "search_listings", query, fmt.Sprintf("%d results", len(items)), caller)
+
+		// Staff and the owner see everything (price, stock quantity, raw data).
+		if isStaff {
+			return jsonResult(map[string]any{"count": len(items), "listings": items, "viewer": "staff"})
+		}
+
+		// Customers must never be shown price or stock quantity. Return a redacted
+		// view (name/category/description only) plus the business contact so the
+		// bot can direct them there for price and availability.
+		safe := make([]map[string]any, 0, len(items))
+		for _, l := range items {
+			m := map[string]any{"name": l.Name}
+			if l.Category.Name != "" {
+				m["category"] = l.Category.Name
+			}
+			if strings.TrimSpace(l.Description) != "" {
+				m["description"] = l.Description
+			}
+			safe = append(safe, m)
+		}
+		resp := map[string]any{
+			"count":    len(safe),
+			"listings": safe,
+			"viewer":   "customer",
+			"policy":   "Do NOT state any price or stock quantity to this customer — that information is intentionally not included here. For price and availability, tell them to contact the business.",
+		}
+		if p, _ := st.GetBusinessProfile(ctx); p != nil {
+			if c := businessContact(p); c != "" {
+				resp["contact_for_details"] = c
+			}
+		}
+		return jsonResult(resp)
 	})
 
 	// list_categories ─────────────────────────────────────────────────────────────
@@ -119,37 +193,45 @@ func registerTools(s *server.MCPServer, st *store.Store) {
 
 	// request_alert ───────────────────────────────────────────────────────────────
 	s.AddTool(mcp.NewTool("request_alert",
-		mcp.WithDescription("Record a customer's request to be notified when something the business can't currently supply becomes available. Call this ONLY after the customer explicitly agrees and gives their name and phone number."),
+		mcp.WithDescription("Record a customer's request to be notified when something the business can't currently supply becomes available. Call this ONLY after the customer clearly agrees to be notified. The phone number defaults to this WhatsApp chat, so you usually only need item_query — ask for the name if it isn't already clear, but you do not need to ask for their number."),
 		mcp.WithString("item_query", mcp.Required(), mcp.Description("What the customer asked for, in plain words, e.g. 'Havells ceiling fan'.")),
-		mcp.WithString("customer_name", mcp.Required(), mcp.Description("The customer's name, as they gave it.")),
-		mcp.WithString("customer_phone", mcp.Required(), mcp.Description("The phone number to alert.")),
+		mcp.WithString("customer_name", mcp.Description("The customer's name, if they gave it.")),
+		mcp.WithString("customer_phone", mcp.Description("Phone to alert. Leave blank to use this WhatsApp chat's number (preferred). Only set this if the customer asks to be notified on a different number.")),
 		mcp.WithString("category", mcp.Description("Category, if known.")),
 		mcp.WithString("availability", mcp.Description("'out_of_stock' (carried but none) or 'not_carried' (not stocked).")),
+		mcp.WithString("source", mcp.Description("'customer_asked' if the customer asked to be notified, or 'bot_offered' if you offered. Defaults to customer_asked.")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		item, err := req.RequireString("item_query")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		name, err := req.RequireString("customer_name")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		// Default the alert number to the WhatsApp sender so the customer doesn't
+		// have to type it — the caller phone is injected by the trusted channel,
+		// not the model, so it can't be spoofed.
+		phone := strings.TrimSpace(req.GetString("customer_phone", ""))
+		if phone == "" {
+			phone = callerPhone(req)
 		}
-		phone, err := req.RequireString("customer_phone")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		if phone == "" || phone == ownerCaller {
+			return mcp.NewToolResultError("No phone number to alert. Ask the customer which number to notify."), nil
+		}
+		source := strings.TrimSpace(req.GetString("source", ""))
+		if source != "bot_offered" {
+			source = "customer_asked"
 		}
 		id, err := st.CreateAlertRequest(ctx, models.AlertRequest{
-			CustomerName:  strings.TrimSpace(name),
-			CustomerPhone: strings.TrimSpace(phone),
+			CustomerName:  strings.TrimSpace(req.GetString("customer_name", "")),
+			CustomerPhone: phone,
 			ItemQuery:     strings.TrimSpace(item),
 			Category:      strings.TrimSpace(req.GetString("category", "")),
 			Availability:  strings.TrimSpace(req.GetString("availability", "")),
+			Source:        source,
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		logActivity(st, "request_alert", item, "alert logged", strings.TrimSpace(phone))
-		return jsonResult(map[string]any{"ok": true, "request_id": id, "message": "Alert request logged."})
+		logActivity(st, "request_alert", item, "alert logged", phone)
+		return jsonResult(map[string]any{"ok": true, "request_id": id, "message": "Alert request logged. The customer will be contacted when it's available."})
 	})
 
 	registerStaffTools(s, st)
@@ -198,6 +280,33 @@ func registerStaffTools(s *server.MCPServer, st *store.Store) {
 		logActivity(st, "staff_pending_alerts", "", fmt.Sprintf("%d pending", len(alerts)), callerPhone(req))
 		return jsonResult(map[string]any{"count": len(alerts), "alerts": alerts})
 	})
+}
+
+// businessContact returns the best phone number a customer can call for price
+// and availability — the first listed business phone, else the WhatsApp number.
+func businessContact(p *models.BusinessProfile) string {
+	if p == nil {
+		return ""
+	}
+	for _, ph := range p.Phones {
+		if s := strings.TrimSpace(ph); s != "" {
+			return s
+		}
+	}
+	return strings.TrimSpace(p.WhatsApp)
+}
+
+// locationAddress joins a branch's structured address parts into one readable
+// line the bot can read out, e.g. "12 MG Road, Kothapet, Guntur, Andhra Pradesh 522001".
+// Returns "" when the owner hasn't entered any address yet.
+func locationAddress(l models.BusinessLocation) string {
+	parts := []string{}
+	for _, v := range []string{l.Address, l.Area, l.City, l.State, l.Pincode} {
+		if s := strings.TrimSpace(v); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // logActivity records a bot tool call for the owner's monitoring view. Failures

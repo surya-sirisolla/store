@@ -20,7 +20,7 @@ services:
 
   # ── API server (Owner console backend) ────────────────────────────────────
   store-backend:
-    build: ./backend
+    image: ${DOCKERHUB_USER}/store-backend:latest
     container_name: bb_backend
     command: ["server"]
     environment:
@@ -40,20 +40,14 @@ services:
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-store-internal}
       OWNER_PASSWORD: ${OWNER_PASSWORD:-}
       JWT_SECRET: ${JWT_SECRET:-}
-      # Owner-console assistant proxies chat to PicoClaw's console channel.
       PICOCLAW_URL: http://picoclaw:18790
       # Bot conversation store (shared from picoclaw) for the idle-chat cleanup job.
       SESSIONS_DIR: /picoclaw-data/workspace/sessions
       SESSION_IDLE_HOURS: ${SESSION_IDLE_HOURS:-24}
-    # Lets the backend reach a local LLM (Ollama/LM Studio) on the host.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - bot_state:/shared
       # Shared with picoclaw so the "Reset idle chats" job can prune old sessions.
       - picoclaw_data:/picoclaw-data
-    ports:
-      - "${BACKEND_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +60,7 @@ services:
 
   # ── MCP server (directory exposed to the bot) ─────────────────────────────
   store-mcp:
-    build: ./backend
+    image: ${DOCKERHUB_USER}/store-backend:latest
     container_name: bb_mcp
     command: ["mcp"]
     environment:
@@ -85,46 +79,15 @@ services:
 
   # ── Owner console (web UI) ────────────────────────────────────────────────
   store-frontend:
-    build:
-      context: ./frontend
-      args:
-        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8080}
+    image: ${DOCKERHUB_USER}/store-frontend:latest
     container_name: bb_frontend
-    ports:
-      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       - store-backend
     restart: unless-stopped
 
-  # ── WhatsApp agent (PicoClaw) ─────────────────────────────────────────────
+  # ── WhatsApp agent (PicoClaw) ──────────────────────────────────────────────
   picoclaw:
-    build:
-      context: ./picoclaw
-      # Build with the `whatsapp_native` tag so the QR-pairing WhatsApp channel
-      # is compiled in (the stock Dockerfile omits it, leaving only the
-      # bridge-based channel). Otherwise mirrors picoclaw/docker/Dockerfile.
-      dockerfile_inline: |
-        FROM golang:1.25-alpine AS builder
-        RUN apk add --no-cache git make
-        WORKDIR /src
-        COPY go.mod go.sum ./
-        RUN go mod download
-        COPY . .
-        # Emit the raw QR string and login events on their own log lines so our
-        # backend can surface WhatsApp pairing status + a crisp QR in the console.
-        RUN sed -i 's#logger.InfoCF("whatsapp", "Scan this QR code with WhatsApp (Linked Devices):", nil)#logger.InfoCF("whatsapp", "Scan this QR code with WhatsApp (Linked Devices):", nil); logger.InfoCF("whatsapp", "WHATSAPP_QR_CODE="+evt.Code, nil)#' pkg/channels/whatsapp_native/whatsapp_native.go && \
-            sed -i 's#logger.InfoCF("whatsapp", "WhatsApp login event", map\[string\]any{"event": evt.Event})#logger.InfoCF("whatsapp", "WHATSAPP_LOGIN_EVENT="+evt.Event, nil)#' pkg/channels/whatsapp_native/whatsapp_native.go && \
-            sed -i 's#case \*events\.Disconnected:#case *events.LoggedOut: logger.InfoCF("whatsapp", "WHATSAPP_LOGGED_OUT", nil); return; case *events.Disconnected:#' pkg/channels/whatsapp_native/whatsapp_native.go && \
-            sed -i 's#switch v := evt.(type) {#switch v := evt.(type) {\n\tcase *events.Connected:\n\t\tif c.client != nil \&\& c.client.Store.ID != nil { logger.InfoCF("whatsapp", "WHATSAPP_OWN_NUMBER="+c.client.Store.ID.User, nil) }#' pkg/channels/whatsapp_native/whatsapp_native.go
-        # Make billing/quota errors (e.g. Anthropic's HTTP-400 "credit balance too
-        # low") trigger provider failover. By default a 400 is classified as a
-        # non-retriable "format" error before the billing message is ever checked,
-        # so the fallback provider would never kick in for credit exhaustion.
-        RUN sed -i 's#\t// Try HTTP status code extraction first.#\tif r := classifyByMessage(msg); r == FailoverBilling || r == FailoverRateLimit { return \&FailoverError{Reason: r, Provider: provider, Model: model, Wrapped: err} }\n\t// Try HTTP status code extraction first.#' pkg/providers/error_classifier.go
-        RUN make build GO_BUILD_TAGS=goolm,stdjson,whatsapp_native
-        FROM alpine:3.23
-        RUN apk add --no-cache ca-certificates tzdata curl jq
-        COPY --from=builder /src/build/picoclaw /usr/local/bin/picoclaw
+    image: ${DOCKERHUB_USER}/store-picoclaw:latest
     container_name: bb_picoclaw
     entrypoint: ["/bin/sh", "/init/picoclaw-init.sh"]
     environment:
@@ -132,20 +95,31 @@ services:
       TZ: ${TZ:-UTC}
       CONTACT_INGEST_URL: http://store-backend:8080/internal/bot/contact-seen
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-store-internal}
-    # Lets the bot reach a local LLM (Ollama/LM Studio) on the host.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./picoclaw-config:/init:ro
       - picoclaw_data:/root/.picoclaw
       - bot_state:/shared
-    ports:
-      - "${PICOCLAW_PORT:-18790}:18790"
     depends_on:
       - store-mcp
+    restart: unless-stopped
+
+  # ── Reverse proxy: the only service exposed to the internet ───────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: bb_caddy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - store-backend
+      - store-frontend
     restart: unless-stopped
 
 volumes:
   pgdata:
   picoclaw_data:
   bot_state:
+  caddy_data:

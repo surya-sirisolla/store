@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 
 	"store/backend/internal/store"
 
@@ -43,5 +44,12 @@ func (h *IngestHandler) ContactSeen(c *gin.Context) {
 		return
 	}
 	h.st.RecordContact(c.Request.Context(), in.Phone, in.Name, in.Message)
+	// Honor reminder opt-out/opt-in keywords so broadcasts respect "STOP".
+	switch strings.ToLower(strings.TrimSpace(in.Message)) {
+	case "stop", "unsubscribe", "opt out", "optout":
+		h.st.SetContactOptOut(c.Request.Context(), in.Phone, true)
+	case "start", "subscribe", "opt in", "optin":
+		h.st.SetContactOptOut(c.Request.Context(), in.Phone, false)
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

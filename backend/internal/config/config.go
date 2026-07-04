@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 type Config struct {
@@ -32,6 +33,17 @@ type Config struct {
 
 	// BotDisabledFile, when present, pauses the WhatsApp bot (owner toggle).
 	BotDisabledFile string
+
+	// LivekeepingFile is the shared JSON file holding the Livekeeping stock-sync
+	// credentials (token + company/user ids) and last-sync bookkeeping.
+	LivekeepingFile string
+
+	// SessionsDir is the bot's per-chat conversation store (picoclaw's
+	// <workspace>/sessions), shared into this container so the idle-chat cleanup
+	// job can prune it. SessionIdleHours is how long a chat may be untouched
+	// before that job clears it.
+	SessionsDir      string
+	SessionIdleHours int
 
 	// InternalToken guards internal-only endpoints (e.g. the bot's contact
 	// ingestion) that are reachable on the docker network but not user-facing.
@@ -64,6 +76,9 @@ func Load() *Config {
 		AnthropicKeyFile: getEnv("ANTHROPIC_KEY_FILE", "/shared/anthropic_key"),
 		LLMKeysFile:      getEnv("LLM_KEYS_FILE", "/shared/llm_keys.json"),
 		BotDisabledFile:  getEnv("BOT_DISABLED_FILE", "/shared/bot_disabled"),
+		LivekeepingFile:  getEnv("LIVEKEEPING_FILE", "/shared/livekeeping.json"),
+		SessionsDir:      getEnv("SESSIONS_DIR", "/picoclaw-data/workspace/sessions"),
+		SessionIdleHours: getEnvInt("SESSION_IDLE_HOURS", 24),
 		InternalToken:    getEnv("INTERNAL_TOKEN", "store-internal"),
 		PicoclawURL:      getEnv("PICOCLAW_URL", "http://picoclaw:18790"),
 		OwnerPassword:    getEnv("OWNER_PASSWORD", ""),
@@ -81,6 +96,15 @@ func (c *Config) DSN() string {
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

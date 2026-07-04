@@ -48,6 +48,12 @@ const (
 	reconnectMultiplier = 2.0
 )
 
+// whatsappStartTime marks when the channel last connected. On connect, whatsmeow
+// replays the offline backlog (every message sent while the bot was down) as
+// ordinary events; we use this cutoff to ignore that backlog so the bot only
+// answers messages that arrive after it was turned on.
+var whatsappStartTime time.Time
+
 // WhatsAppNativeChannel implements the WhatsApp channel using whatsmeow (in-process, no external bridge).
 type WhatsAppNativeChannel struct {
 	*channels.BaseChannel
@@ -210,6 +216,9 @@ func (c *WhatsAppNativeChannel) Start(ctx context.Context) error {
 	}
 
 	startOK = true
+	// Cutoff for the offline-backlog filter in handleIncoming: from here on,
+	// only messages newer than this are treated as live.
+	whatsappStartTime = time.Now()
 	c.SetRunning(true)
 	logger.InfoC("whatsapp", "WhatsApp native channel connected")
 	return nil
@@ -374,6 +383,13 @@ func reportContactSeen(phone, name, message string) {
 // id) rather than their phone; we recover the phone from the alternative
 // address or the LID→PN mapping store.
 func (c *WhatsAppNativeChannel) resolveCallerPhone(evt *events.Message) string {
+	// A self-chat ("message yourself") arrives from the account's own identity,
+	// which is often a LID that won't reverse-map to a phone. It's the owner, so
+	// resolve it straight to the account's own number.
+	if evt.Info.IsFromMe && c.client != nil && c.client.Store.ID != nil && c.client.Store.ID.User != "" {
+		return "+" + c.client.Store.ID.User
+	}
+
 	var pn types.JID
 	switch {
 	case evt.Info.Sender.Server == types.DefaultUserServer:
@@ -391,8 +407,38 @@ func (c *WhatsAppNativeChannel) resolveCallerPhone(evt *events.Message) string {
 	return "+" + pn.User
 }
 
+// isSelfChat reports whether an event is the owner messaging their own number
+// (WhatsApp "message yourself"). Self-chats may be addressed by either the
+// account's phone number (PN) or its privacy LID, so both are checked.
+func (c *WhatsAppNativeChannel) isSelfChat(evt *events.Message) bool {
+	if c.client == nil || c.client.Store == nil {
+		return false
+	}
+	chatUser := evt.Info.Chat.User
+	if c.client.Store.ID != nil && chatUser == c.client.Store.ID.User {
+		return true
+	}
+	if lid := c.client.Store.LID; lid.User != "" && chatUser == lid.User {
+		return true
+	}
+	return false
+}
+
 func (c *WhatsAppNativeChannel) handleIncoming(evt *events.Message) {
 	if evt.Message == nil {
+		return
+	}
+
+	// Ignore the account's own outgoing messages (multi-device echoes, the bot's
+	// own replies, broadcasts) so it never reacts to itself — EXCEPT a
+	// "message yourself" self-chat, which the owner uses to test the bot.
+	if evt.Info.IsFromMe && !c.isSelfChat(evt) {
+		return
+	}
+	// Drop the offline backlog WhatsApp replays on (re)connect — only answer
+	// messages newer than startup. A 2-minute grace absorbs minor clock skew
+	// between the container and WhatsApp's servers so live messages aren't lost.
+	if !whatsappStartTime.IsZero() && evt.Info.Timestamp.Before(whatsappStartTime.Add(-2*time.Minute)) {
 		return
 	}
 	// Status posts and broadcast lists arrive as ordinary *events.Message with

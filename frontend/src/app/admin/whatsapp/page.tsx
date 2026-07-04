@@ -4,17 +4,18 @@ import Link from "next/link";
 import { QRCodeSVG } from "qrcode.react";
 import {
   getWhatsAppStatus, enableBot, disableBot,
-  getBotStats, getBotContacts, getAlerts, markAlertNotified,
+  getBotStats, getBotContacts,
 } from "@/lib/api";
 import {
   Smartphone, CheckCircle, Loader2, AlertTriangle, RefreshCw, KeyRound,
   Power, PowerOff, Unlink, Users, Bell, Activity, MessageSquare, Phone, Shield,
+  Copy, Check, ExternalLink,
 } from "lucide-react";
 
 type Status =
   | "need_key" | "disabled" | "starting" | "waiting_for_scan"
   | "connected" | "logged_out" | "error";
-interface StatusResp { status: Status; qr?: string; detail?: string }
+interface StatusResp { status: Status; qr?: string; detail?: string; number?: string; chat_link?: string }
 
 interface BotStats {
   total_interactions: number; pending_alerts: number;
@@ -24,11 +25,6 @@ interface Contact {
   id: number; phone: string; display_name: string; is_staff: boolean;
   interactions: number; last_query: string; last_seen: string;
 }
-interface Alert {
-  id: number; customer_name: string; customer_phone: string; item_query: string;
-  category: string; availability: string; status: string; created_at: string;
-}
-
 const STATUS_META: Record<Status, { label: string; dot: string }> = {
   need_key: { label: "Needs API key", dot: "bg-subtle" },
   disabled: { label: "Off", dot: "bg-subtle" },
@@ -70,10 +66,10 @@ export default function WhatsAppPage() {
   const [toggling, setToggling] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectPhase, setReconnectPhase] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const [stats, setStats] = useState<BotStats | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
   const [range, setRange] = useState("all");
 
   const loadStatus = useCallback(async () => {
@@ -85,7 +81,6 @@ export default function WhatsAppPage() {
   const loadMonitor = useCallback(async () => {
     getBotStats().then((r) => setStats(r.data));
     getBotContacts(range === "all" ? undefined : range).then((r) => setContacts(r.data?.contacts || []));
-    getAlerts().then((r) => setAlerts(r.data || []));
   }, [range]);
 
   const toggleBot = useCallback(async () => {
@@ -117,8 +112,6 @@ export default function WhatsAppPage() {
     const t = setInterval(loadMonitor, 10000);
     return () => clearInterval(t);
   }, [loadMonitor]);
-
-  async function notify(id: number) { await markAlertNotified(id); loadMonitor(); }
 
   const status = data?.status;
   const isDisabled = status === "disabled";
@@ -162,8 +155,39 @@ export default function WhatsAppPage() {
           {!loading && status === "connected" && (
             <div className="flex flex-col items-center text-center py-6">
               <div className="p-3 rounded-full bg-accent/10 mb-3"><CheckCircle size={34} className="text-accent" /></div>
-              <p className="font-semibold text-ink">WhatsApp is connected</p>
+              <p className="font-semibold text-ink">WhatsApp is connected{data?.number ? <> as <span className="font-mono">{data.number}</span></> : ""}</p>
               <p className="text-sm text-muted mt-1 max-w-md">Your bot is live. Customers can message your number and it replies from your listings.</p>
+
+              {data?.chat_link && (
+                <div className="mt-5 w-full max-w-md text-left">
+                  <p className="text-xs font-medium text-subtle uppercase tracking-wider mb-2">Share this link — anyone can message your bot</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      readOnly
+                      value={data.chat_link}
+                      onFocus={(e) => e.currentTarget.select()}
+                      className="flex-1 rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm font-mono text-ink outline-none"
+                    />
+                    <button
+                      onClick={async () => { await navigator.clipboard.writeText(data.chat_link!); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+                      className="flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg bg-panel-2 border border-line text-muted hover:text-ink whitespace-nowrap"
+                    >
+                      {copied ? <Check size={15} className="text-accent" /> : <Copy size={15} />}
+                      {copied ? "Copied" : "Copy"}
+                    </button>
+                    <a
+                      href={data.chat_link} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg bg-accent text-accent-ink hover:bg-accent-strong whitespace-nowrap"
+                    >
+                      <ExternalLink size={15} /> Open
+                    </a>
+                  </div>
+                  <div className="flex flex-col items-center mt-4">
+                    <div className="p-3 bg-white rounded-xl"><QRCodeSVG value={data.chat_link} size={140} level="M" /></div>
+                    <p className="text-xs text-subtle mt-2">Or let customers scan this to start a chat</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -224,10 +248,12 @@ export default function WhatsAppPage() {
         <StatCard label="People who messaged" value={stats?.unique_contacts ?? 0} icon={<Users size={18} />} />
         <StatCard label="New today" value={stats?.contacts_today ?? 0} icon={<Activity size={18} />} />
         <StatCard label="Total interactions" value={stats?.total_interactions ?? 0} icon={<MessageSquare size={18} />} />
-        <StatCard label="Pending alerts" value={stats?.pending_alerts ?? 0} icon={<Bell size={18} />} />
+        <Link href="/admin/alerts" className="block">
+          <StatCard label="Pending alerts" value={stats?.pending_alerts ?? 0} icon={<Bell size={18} />} />
+        </Link>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-6">
         <div className="bg-panel rounded-xl border border-line p-5">
           <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
             <h2 className="font-semibold text-ink">Who messaged the bot</h2>
@@ -260,29 +286,6 @@ export default function WhatsAppPage() {
                 <div className="text-right whitespace-nowrap">
                   <p className="text-xs text-muted">{ct.interactions}×</p>
                   <p className="text-xs text-subtle">{timeAgo(ct.last_seen)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-panel rounded-xl border border-line p-5">
-          <h2 className="font-semibold text-ink mb-3">Alert Requests (waitlist)</h2>
-          <div className="space-y-2 max-h-112 overflow-auto">
-            {alerts.length === 0 && <p className="text-sm text-subtle py-8 text-center">No alert requests. When the bot can&apos;t find something, customers can ask to be notified — those land here.</p>}
-            {alerts.map((al) => (
-              <div key={al.id} className="border border-line rounded-lg p-3 bg-panel-2/40">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-ink truncate">{al.item_query}</p>
-                    <p className="text-xs text-muted flex items-center gap-1 mt-0.5">{al.customer_name} · <Phone size={11} /> {al.customer_phone}</p>
-                    {al.availability && <span className="text-xs text-subtle">{al.availability.replace("_", " ")}</span>}
-                  </div>
-                  {al.status === "logged" ? (
-                    <button onClick={() => notify(al.id)} className="text-xs bg-accent text-accent-ink hover:bg-accent-strong px-2.5 py-1 rounded-lg whitespace-nowrap font-medium">Mark notified</button>
-                  ) : (
-                    <span className="flex items-center gap-1 text-accent text-xs whitespace-nowrap"><CheckCircle size={13} /> Notified</span>
-                  )}
                 </div>
               </div>
             ))}

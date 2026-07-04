@@ -45,6 +45,45 @@ func (s *Store) UpsertBusinessProfile(ctx context.Context, p *models.BusinessPro
 	return s.db.WithContext(ctx).Save(p).Error
 }
 
+// ── Business locations (godowns) ───────────────────────────────────────────────
+
+// ListBusinessLocations returns every physical location, ordered by name.
+func (s *Store) ListBusinessLocations(ctx context.Context) ([]models.BusinessLocation, error) {
+	locs := []models.BusinessLocation{}
+	err := s.db.WithContext(ctx).Order("name").Find(&locs).Error
+	return locs, err
+}
+
+// GetBusinessLocation returns one location by id, or nil if it doesn't exist.
+func (s *Store) GetBusinessLocation(ctx context.Context, id uint) (*models.BusinessLocation, error) {
+	var l models.BusinessLocation
+	err := s.db.WithContext(ctx).First(&l, id).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &l, nil
+}
+
+// UpdateBusinessLocation saves owner edits (name + full address + phone + active)
+// for one location without touching its SourceID, so re-syncs still match it.
+func (s *Store) UpdateBusinessLocation(ctx context.Context, id uint, in models.BusinessLocation) error {
+	return s.db.WithContext(ctx).Model(&models.BusinessLocation{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"name":    in.Name,
+			"address": in.Address,
+			"area":    in.Area,
+			"city":    in.City,
+			"state":   in.State,
+			"pincode": in.Pincode,
+			"phone":   in.Phone,
+			"active":  in.Active,
+		}).Error
+}
+
 // ── Categories ────────────────────────────────────────────────────────────────
 
 // ListCategoryTree returns top-level categories with nested children.
@@ -147,6 +186,11 @@ type SearchParams struct {
 	Query    string // free text matched against name/address/description/category/data
 	Category string // exact category name filter (case-insensitive)
 	Limit    int    // 0 -> default 20
+	// InStock, when true, hides items that are out of stock — quantity 0 or
+	// negative. Items with an unknown quantity (nil, e.g. a service) are kept.
+	// Used for customer-facing searches so the bot never offers something the
+	// business can't currently supply.
+	InStock bool
 }
 
 // SearchListings finds active listings matching the params. Free text is
@@ -160,6 +204,20 @@ func (s *Store) SearchListings(ctx context.Context, p SearchParams) ([]models.Li
 		Preload("Category")
 
 	for _, tok := range tokenize(p.Query) {
+		// Short abbreviations like "ac", "dc", "led" are matched on WORD boundaries
+		// so "ac" hits "SPLIT AC"/"Tower Ac" but not "ACCESSORIES"/"black"/"pack".
+		// Longer tokens keep loose substring matching for partial-word matches.
+		if isShortWordToken(tok) {
+			pat := `\y` + tok + `\y`
+			q = q.Where(
+				s.db.Where("listings.name ~* ?", pat).
+					Or("listings.address ~* ?", pat).
+					Or("listings.description ~* ?", pat).
+					Or("categories.name ~* ?", pat).
+					Or("listings.data::text ~* ?", pat),
+			)
+			continue
+		}
 		like := "%" + tok + "%"
 		q = q.Where(
 			s.db.Where("listings.name ILIKE ?", like).
@@ -172,6 +230,11 @@ func (s *Store) SearchListings(ctx context.Context, p SearchParams) ([]models.Li
 
 	if c := strings.TrimSpace(p.Category); c != "" {
 		q = q.Where("categories.name ILIKE ?", c)
+	}
+
+	if p.InStock {
+		// nil quantity = service/unknown, keep it; 0 or negative = out of stock.
+		q = q.Where("listings.quantity IS NULL OR listings.quantity > 0")
 	}
 
 	limit := p.Limit
@@ -187,15 +250,96 @@ func (s *Store) SearchListings(ctx context.Context, p SearchParams) ([]models.Li
 // ── Alerts (waitlist) ─────────────────────────────────────────────────────────
 
 // CreateAlertRequest durably records a customer's "notify me when available"
-// request, defaulting Status to "logged". Returns the new id.
+// request, defaulting Status to "logged". It de-duplicates: if the same phone
+// already has an open (logged/ready) request for the same item, that existing
+// row is refreshed instead of inserting a duplicate, and its id is returned.
 func (s *Store) CreateAlertRequest(ctx context.Context, r models.AlertRequest) (uint, error) {
 	if r.Status == "" {
 		r.Status = "logged"
 	}
+	if r.Source == "" {
+		r.Source = "customer_asked"
+	}
+
+	phone := strings.TrimSpace(r.CustomerPhone)
+	item := strings.TrimSpace(r.ItemQuery)
+	if phone != "" && item != "" {
+		var existing models.AlertRequest
+		err := s.db.WithContext(ctx).
+			Where("customer_phone = ? AND LOWER(item_query) = LOWER(?) AND status IN ?",
+				phone, item, []string{"logged", "ready"}).
+			First(&existing).Error
+		if err == nil {
+			// Refresh the name/category if the new call carries better info.
+			updates := map[string]interface{}{}
+			if n := strings.TrimSpace(r.CustomerName); n != "" && n != existing.CustomerName {
+				updates["customer_name"] = n
+			}
+			if cat := strings.TrimSpace(r.Category); cat != "" {
+				updates["category"] = cat
+			}
+			if len(updates) > 0 {
+				s.db.WithContext(ctx).Model(&existing).Updates(updates)
+			}
+			return existing.ID, nil
+		}
+		if err != gorm.ErrRecordNotFound {
+			return 0, err
+		}
+	}
+
 	if err := s.db.WithContext(ctx).Create(&r).Error; err != nil {
 		return 0, err
 	}
 	return r.ID, nil
+}
+
+// FindAvailableMatch returns the first active listing that satisfies the free-text
+// query and is actually available — quantity unknown (nil, e.g. a service) or
+// greater than zero. Used to decide whether a waitlisted item is back.
+func (s *Store) FindAvailableMatch(ctx context.Context, query string) (*models.Listing, bool) {
+	if strings.TrimSpace(query) == "" {
+		return nil, false
+	}
+	items, err := s.SearchListings(ctx, SearchParams{Query: query, Limit: 10})
+	if err != nil {
+		return nil, false
+	}
+	for i := range items {
+		if items[i].Quantity == nil || *items[i].Quantity > 0 {
+			return &items[i], true
+		}
+	}
+	return nil, false
+}
+
+// RaiseReadyAlerts scans every still-logged alert and, for any whose item is now
+// available, flips it to "ready" and links the matching listing. Returns how many
+// it raised. Called after a stock sync and after a listing is created/restocked,
+// so the owner is prompted to notify the customer. Cheap: the waitlist is small.
+func (s *Store) RaiseReadyAlerts(ctx context.Context) int {
+	var pending []models.AlertRequest
+	if err := s.db.WithContext(ctx).Where("status = ?", "logged").Find(&pending).Error; err != nil {
+		return 0
+	}
+	now := time.Now()
+	raised := 0
+	for _, a := range pending {
+		match, ok := s.FindAvailableMatch(ctx, a.ItemQuery)
+		if !ok {
+			continue
+		}
+		updates := map[string]interface{}{
+			"status":     "ready",
+			"listing_id": match.ID,
+			"ready_at":   now,
+		}
+		if err := s.db.WithContext(ctx).Model(&models.AlertRequest{}).
+			Where("id = ?", a.ID).Updates(updates).Error; err == nil {
+			raised++
+		}
+	}
+	return raised
 }
 
 // ── Contacts (who messaged the bot) ───────────────────────────────────────────
@@ -279,6 +423,49 @@ func (s *Store) CountContacts(ctx context.Context, since time.Time) int64 {
 	return n
 }
 
+// SetContactOptOut flips a contact's reminder opt-out by phone. Used when a
+// customer replies "STOP" (out=true) or "START" (out=false). No-op if unknown.
+func (s *Store) SetContactOptOut(ctx context.Context, phone string, out bool) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return
+	}
+	s.db.WithContext(ctx).Model(&models.Contact{}).
+		Where("phone = ?", phone).Update("opted_out", out)
+}
+
+// BroadcastRecipients returns the contacts eligible for a reminder broadcast:
+// opted-in numbers, optionally limited to those seen within sinceDays (0 = all)
+// and optionally excluding staff. Newest-active first.
+func (s *Store) BroadcastRecipients(ctx context.Context, sinceDays int, includeStaff bool) ([]models.Contact, error) {
+	q := s.db.WithContext(ctx).Where("opted_out = ?", false)
+	if !includeStaff {
+		q = q.Where("is_staff = ?", false)
+	}
+	if sinceDays > 0 {
+		q = q.Where("last_seen >= ?", time.Now().AddDate(0, 0, -sinceDays))
+	}
+	out := []models.Contact{}
+	err := q.Order("last_seen DESC").Find(&out).Error
+	return out, err
+}
+
+// FeaturedListings returns active, in-stock listings the owner flagged as
+// featured/offers, for composing a reminder message. limit <= 0 → 5.
+func (s *Store) FeaturedListings(ctx context.Context, limit int) ([]models.Listing, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	out := []models.Listing{}
+	err := s.db.WithContext(ctx).
+		Where("active = true AND featured = true").
+		Where("quantity IS NULL OR quantity > 0").
+		Order("updated_at DESC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
+}
+
 // ── Bot activity log ──────────────────────────────────────────────────────────
 
 // LogActivity records one bot tool call for the owner's monitoring view.
@@ -301,6 +488,22 @@ func tokenize(query string) []string {
 		}
 	}
 	return out
+}
+
+// isShortWordToken reports whether a token is a short (<=3 char) purely
+// alphanumeric word — the case where loose substring matching produces noise, so
+// we match it on word boundaries instead. Alphanumeric-only keeps the value safe
+// to drop straight into a Postgres regex (no metacharacters to escape).
+func isShortWordToken(s string) bool {
+	if len(s) == 0 || len(s) > 3 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 // stemToken lowercases a word and strips a trailing plural "s" so a customer's

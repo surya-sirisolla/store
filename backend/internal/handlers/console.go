@@ -144,6 +144,10 @@ func (h *ConsoleHandler) CreateListing(c *gin.Context) {
 		Active:      true,
 	}
 	h.db.Create(&listing)
+	// A newly-added item may be something a customer is waitlisted for.
+	if listing.Quantity == nil || *listing.Quantity > 0 {
+		h.st.RaiseReadyAlerts(c.Request.Context())
+	}
 	c.JSON(http.StatusCreated, listing)
 }
 
@@ -162,6 +166,8 @@ func (h *ConsoleHandler) UpdateListing(c *gin.Context) {
 		CategoryID  *uint        `json:"category_id"`
 		Quantity    *int         `json:"quantity"`
 		Price       *float64     `json:"price"`
+		Featured    *bool        `json:"featured"`
+		OfferText   *string      `json:"offer_text"`
 		Data        models.JSONB `json:"data"`
 		Active      *bool        `json:"active"`
 	}
@@ -188,6 +194,12 @@ func (h *ConsoleHandler) UpdateListing(c *gin.Context) {
 	if input.Price != nil {
 		listing.Price = input.Price
 	}
+	if input.Featured != nil {
+		listing.Featured = *input.Featured
+	}
+	if input.OfferText != nil {
+		listing.OfferText = *input.OfferText
+	}
 	if input.Data != nil {
 		listing.Data = input.Data
 	}
@@ -196,6 +208,10 @@ func (h *ConsoleHandler) UpdateListing(c *gin.Context) {
 	}
 
 	h.db.Save(&listing)
+	// A restock (quantity back above zero) may satisfy a waiting customer.
+	if listing.Active && (listing.Quantity == nil || *listing.Quantity > 0) {
+		h.st.RaiseReadyAlerts(c.Request.Context())
+	}
 	c.JSON(http.StatusOK, listing)
 }
 

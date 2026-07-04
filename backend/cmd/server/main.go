@@ -36,8 +36,17 @@ func main() {
 	claude := services.NewClaudeService(keyFunc)
 	excel := services.NewExcelService(database, claude)
 	aiImport := services.NewAIImportService(st, claude)
+	livekeeping := services.NewLivekeepingService(database, st)
+	sender := services.NewWhatsAppSender(cfg.PicoclawURL, cfg.InternalToken)
+	broadcast := services.NewBroadcastService(st, sender)
+	jobs := services.NewJobService(database, st, livekeeping, broadcast, cfg.LivekeepingFile, cfg.SessionsDir, cfg.SessionIdleHours)
+	jobs.Start()
 
 	consoleH := handlers.NewConsoleHandler(database, st)
+	livekeepingH := handlers.NewLivekeepingHandler(livekeeping, cfg.LivekeepingFile)
+	jobsH := handlers.NewJobsHandler(jobs)
+	alertsH := handlers.NewAlertsHandler(database, st)
+	broadcastH := handlers.NewBroadcastHandler(sender)
 	bulkH := handlers.NewBulkHandler(database, excel, aiImport)
 	aiImportH := handlers.NewAIImportHandler(aiImport)
 	waH := handlers.NewWhatsAppHandler(cfg.PicoclawLogPath, cfg.LLMKeysFile, cfg.BotDisabledFile)
@@ -86,8 +95,31 @@ func main() {
 
 		api.POST("/listings/ai-import", aiImportH.Import)
 
+		// Livekeeping stock-item sync: credentials + token validity. The actual
+		// run is driven through the scheduled-jobs endpoints below.
+		api.GET("/integrations/livekeeping", livekeepingH.GetConfig)
+		api.PUT("/integrations/livekeeping", livekeepingH.SaveConfig)
+		api.POST("/integrations/livekeeping/check", livekeepingH.Check)
+
+		// Automation: scheduled background jobs (system jobs + owner reminders).
+		api.GET("/jobs", jobsH.List)
+		api.POST("/jobs", jobsH.Create)
+		api.POST("/jobs/preview", jobsH.Preview)
+		api.PUT("/jobs/:key", jobsH.Update)
+		api.DELETE("/jobs/:key", jobsH.Delete)
+		api.PUT("/jobs/:key/schedule", jobsH.SaveSchedule)
+		api.POST("/jobs/:key/run", jobsH.Run)
+
+		// Outbound WhatsApp: send a one-off test message (foundation for broadcasts).
+		api.POST("/bot/whatsapp/test-send", broadcastH.TestSend)
+
 		api.GET("/business-profile", consoleH.GetProfile)
 		api.PUT("/business-profile", consoleH.UpdateProfile)
+
+		// Business locations (godowns synced from Livekeeping) with owner-editable
+		// addresses.
+		api.GET("/business-locations", consoleH.ListLocations)
+		api.PUT("/business-locations/:id", consoleH.UpdateLocation)
 
 		api.GET("/staff", consoleH.ListStaff)
 		api.POST("/staff", consoleH.CreateStaff)
@@ -96,11 +128,15 @@ func main() {
 		api.GET("/bot/stats", consoleH.BotStats)
 		api.GET("/bot/activity", consoleH.BotActivityFeed)
 		api.GET("/bot/contacts", consoleH.BotContacts)
-		api.GET("/bot/alerts", consoleH.ListAlerts)
-		api.PATCH("/bot/alerts/:id/notified", consoleH.MarkAlertNotified)
 		api.GET("/bot/whatsapp/status", waH.Status)
 		api.POST("/bot/whatsapp/enable", waH.Enable)
 		api.POST("/bot/whatsapp/disable", waH.Disable)
+
+		// Customer alerts (waitlist + restock-ready). List/counts/status/re-check.
+		api.GET("/alerts", alertsH.List)
+		api.GET("/alerts/counts", alertsH.Counts)
+		api.PATCH("/alerts/:id/status", alertsH.SetStatus)
+		api.POST("/alerts/recheck", alertsH.Recheck)
 
 		api.POST("/assistant/chat", assistantH.Chat)
 		api.GET("/assistant/status", assistantH.Status)
