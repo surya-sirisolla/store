@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -9,7 +9,7 @@ import {
 import {
   Smartphone, CheckCircle, Loader2, AlertTriangle, RefreshCw, KeyRound,
   Power, PowerOff, Unlink, Users, Bell, Activity, MessageSquare, Phone, Shield,
-  Copy, Check, ExternalLink,
+  Copy, Check, ExternalLink, ChevronDown,
 } from "lucide-react";
 
 type Status =
@@ -71,6 +71,8 @@ export default function WhatsAppPage() {
   const [stats, setStats] = useState<BotStats | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [range, setRange] = useState("all");
+  const [connOpen, setConnOpen] = useState(true);
+  const autoCollapsed = useRef(false);
 
   const loadStatus = useCallback(async () => {
     try { const r = await getWhatsAppStatus(); setData(r.data); }
@@ -116,6 +118,15 @@ export default function WhatsAppPage() {
   const status = data?.status;
   const isDisabled = status === "disabled";
 
+  // Once the bot is connected, collapse the connection panel a single time so the
+  // dashboard is front-and-center. The owner can still expand it whenever needed.
+  useEffect(() => {
+    if (status === "connected" && !autoCollapsed.current) {
+      autoCollapsed.current = true;
+      setConnOpen(false);
+    }
+  }, [status]);
+
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -133,8 +144,22 @@ export default function WhatsAppPage() {
       <p className="text-sm text-subtle mb-6">Connect the bot and see who&apos;s reaching your business — all in one place.</p>
 
       {/* ── Connection ─────────────────────────────────────────────── */}
-      <div className="bg-panel rounded-xl border border-line p-6 mb-6">
-          {loading && <div className="flex items-center gap-2 text-muted text-sm"><Loader2 size={18} className="animate-spin" /> Checking status…</div>}
+      <div className="bg-panel rounded-xl border border-line mb-6">
+        <button onClick={() => setConnOpen((o) => !o)} className="w-full flex items-center justify-between gap-3 px-6 py-4 text-left">
+          <span className="flex items-center gap-2 font-semibold text-ink">
+            <Smartphone size={17} className="text-accent" /> Connection
+            {status && (
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted bg-panel-2 border border-line rounded-full px-2 py-0.5">
+                <span className={`w-2 h-2 rounded-full ${STATUS_META[status].dot}`} />
+                {STATUS_META[status].label}
+              </span>
+            )}
+          </span>
+          <ChevronDown size={18} className={`text-muted transition-transform ${connOpen ? "rotate-180" : ""}`} />
+        </button>
+        {connOpen && (
+          <div className="px-6 pb-6 pt-1 border-t border-line">
+          {loading && <div className="flex items-center gap-2 text-muted text-sm pt-4"><Loader2 size={18} className="animate-spin" /> Checking status…</div>}
 
           {!loading && status === "need_key" && (
             <div className="flex flex-col items-center text-center py-6">
@@ -241,6 +266,8 @@ export default function WhatsAppPage() {
               </button>
             </div>
           )}
+          </div>
+        )}
       </div>
 
       {/* ── Monitor ──────────────────────────────────────────────────── */}

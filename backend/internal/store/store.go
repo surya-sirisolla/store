@@ -45,6 +45,28 @@ func (s *Store) UpsertBusinessProfile(ctx context.Context, p *models.BusinessPro
 	return s.db.WithContext(ctx).Save(p).Error
 }
 
+// ── Console auth ───────────────────────────────────────────────────────────────
+
+// GetOwnerPasswordHash returns the stored bcrypt hash for the console login, or
+// "" if none has been set yet.
+func (s *Store) GetOwnerPasswordHash(ctx context.Context) (string, error) {
+	var a models.AuthCredential
+	err := s.db.WithContext(ctx).First(&a).Error
+	if err == gorm.ErrRecordNotFound {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return a.PasswordHash, nil
+}
+
+// SetOwnerPassword upserts the single console-login credential (id forced to 1).
+func (s *Store) SetOwnerPassword(ctx context.Context, hash string) error {
+	a := models.AuthCredential{ID: 1, PasswordHash: hash}
+	return s.db.WithContext(ctx).Save(&a).Error
+}
+
 // ── Business locations (godowns) ───────────────────────────────────────────────
 
 // ListBusinessLocations returns every physical location, ordered by name.
@@ -191,6 +213,28 @@ type SearchParams struct {
 	// Used for customer-facing searches so the bot never offers something the
 	// business can't currently supply.
 	InStock bool
+	// Stock is a console-side quantity filter: "available" (>0), "out" (=0),
+	// "negative" (<0), or "unknown" (no quantity). Empty means no filter.
+	Stock string
+}
+
+// StockCondition maps a stock filter value to a SQL predicate on the listings
+// quantity column, or "" for no filter / an unrecognized value. The returned
+// string is a fixed constant (never interpolated user input), so it's safe to
+// pass straight to a WHERE clause.
+func StockCondition(stock string) string {
+	switch strings.TrimSpace(stock) {
+	case "available":
+		return "quantity > 0"
+	case "out":
+		return "quantity = 0"
+	case "negative":
+		return "quantity < 0"
+	case "unknown":
+		return "quantity IS NULL"
+	default:
+		return ""
+	}
 }
 
 // SearchListings finds active listings matching the params. Free text is
@@ -235,6 +279,10 @@ func (s *Store) SearchListings(ctx context.Context, p SearchParams) ([]models.Li
 	if p.InStock {
 		// nil quantity = service/unknown, keep it; 0 or negative = out of stock.
 		q = q.Where("listings.quantity IS NULL OR listings.quantity > 0")
+	}
+
+	if cond := StockCondition(p.Stock); cond != "" {
+		q = q.Where("listings." + cond)
 	}
 
 	limit := p.Limit

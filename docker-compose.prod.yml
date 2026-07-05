@@ -107,6 +107,10 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: bb_caddy
+    environment:
+      # Set SITE_ADDRESS to your domain (e.g. store.example.com) to turn on
+      # automatic HTTPS; unset it falls back to plain HTTP on :80.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

@@ -14,6 +14,8 @@ import {
   Sparkles,
   CalendarClock,
   Bell,
+  Puzzle,
+  ShieldCheck,
   LogOut,
 } from "lucide-react";
 import { clearToken } from "@/lib/auth";
@@ -54,6 +56,7 @@ const sections: NavSection[] = [
   {
     header: "Automation",
     items: [
+      { href: "/admin/extensions", label: "Extensions", icon: <Puzzle size={18} /> },
       { href: "/admin/scheduled-jobs", label: "Scheduled Jobs", icon: <CalendarClock size={18} /> },
     ],
   },
@@ -62,6 +65,7 @@ const sections: NavSection[] = [
     items: [
       { href: "/admin/ai-providers", label: "AI Providers", icon: <Bot size={18} /> },
       { href: "/admin/staff", label: "Staff", icon: <Users size={18} /> },
+      { href: "/admin/security", label: "Security", icon: <ShieldCheck size={18} /> },
     ],
   },
 ];

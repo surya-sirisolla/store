@@ -185,14 +185,25 @@ func (s *LivekeepingService) CheckToken(ctx context.Context, creds SyncCreds) er
 	return err
 }
 
+// SyncScope selects which parts of Livekeeping a Sync run imports. The owner
+// configures this per integration; an all-false scope is a no-op.
+type SyncScope struct {
+	Stock   bool // stock items → listings
+	Godowns bool // godowns → business locations
+	Profile bool // company profile → business profile
+}
+
+// FullScope imports everything — the default when no selection is given.
+func FullScope() SyncScope { return SyncScope{Stock: true, Godowns: true, Profile: true} }
+
 // Sync reconciles our directory with the Livekeeping catalog incrementally: it
 // matches items by their stable Livekeeping id (SourceID), updating the ones
 // that changed, inserting new ones, and deleting only previously-synced items
 // that have vanished from Livekeeping. Manually-added listings (no SourceID)
 // are left untouched. To avoid ever mangling data on a bad token or a mid-run
 // failure, it fetches the whole catalog into memory first and only touches the
-// DB once every page is in hand.
-func (s *LivekeepingService) Sync(ctx context.Context, creds SyncCreds) (SyncResult, error) {
+// DB once every page is in hand. The scope selects which parts run.
+func (s *LivekeepingService) Sync(ctx context.Context, creds SyncCreds, scope SyncScope) (SyncResult, error) {
 	var res SyncResult
 	if strings.TrimSpace(creds.Token) == "" {
 		return res, fmt.Errorf("livekeeping token is required")
@@ -204,29 +215,37 @@ func (s *LivekeepingService) Sync(ctx context.Context, creds SyncCreds) (SyncRes
 	// 0. Company profile — one polite call per sync to keep the business profile
 	// fresh. A bad token surfaces here (and would also fail the stock pull); any
 	// other company error is non-fatal so it never blocks the stock sync.
-	if err := s.syncCompanyProfile(ctx, creds); err != nil {
-		var authErr *AuthError
-		if errors.As(err, &authErr) {
+	if scope.Profile {
+		if err := s.syncCompanyProfile(ctx, creds); err != nil {
+			var authErr *AuthError
+			if errors.As(err, &authErr) {
+				return res, err
+			}
+		} else {
+			res.CompanyUpdated = true
+		}
+		if err := sleepCtx(ctx, livekeepingPageDelay); err != nil {
 			return res, err
 		}
-	} else {
-		res.CompanyUpdated = true
-	}
-	if err := sleepCtx(ctx, livekeepingPageDelay); err != nil {
-		return res, err
 	}
 
 	// 0b. Godowns → business locations. Same policy as the company profile: a
 	// bad token aborts the sync, any other godown error is non-fatal so it never
 	// blocks the stock pull.
-	if err := s.syncGodowns(ctx, creds, &res); err != nil {
-		var authErr *AuthError
-		if errors.As(err, &authErr) {
+	if scope.Godowns {
+		if err := s.syncGodowns(ctx, creds, &res); err != nil {
+			var authErr *AuthError
+			if errors.As(err, &authErr) {
+				return res, err
+			}
+		}
+		if err := sleepCtx(ctx, livekeepingPageDelay); err != nil {
 			return res, err
 		}
 	}
-	if err := sleepCtx(ctx, livekeepingPageDelay); err != nil {
-		return res, err
+
+	if !scope.Stock {
+		return res, nil // stock (and its prune) skipped by scope
 	}
 
 	// 1. Pull the whole catalog (network only — no DB writes yet). Pages are

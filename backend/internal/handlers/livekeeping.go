@@ -37,6 +37,10 @@ func (h *LivekeepingHandler) GetConfig(c *gin.Context) {
 		"token_valid":      cfg.TokenValid,
 		"token_checked_at": cfg.TokenCheckedAt,
 		"token_error":      cfg.TokenError,
+		// Sync scope — resolved booleans (nil in storage ⇒ enabled).
+		"sync_stock":   cfg.StockEnabled(),
+		"sync_godowns": cfg.GodownsEnabled(),
+		"sync_profile": cfg.ProfileEnabled(),
 	})
 }
 
@@ -47,6 +51,11 @@ func (h *LivekeepingHandler) SaveConfig(c *gin.Context) {
 		Token     string `json:"token"`
 		CompanyID string `json:"company_id"`
 		UserID    string `json:"user_id"`
+		// Sync-scope toggles. Pointers so an omitted field leaves the current
+		// value untouched (partial updates), while an explicit false disables it.
+		SyncStock   *bool `json:"sync_stock"`
+		SyncGodowns *bool `json:"sync_godowns"`
+		SyncProfile *bool `json:"sync_profile"`
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -66,6 +75,15 @@ func (h *LivekeepingHandler) SaveConfig(c *gin.Context) {
 	}
 	if v := strings.TrimSpace(in.UserID); v != "" {
 		cfg.UserID = v
+	}
+	if in.SyncStock != nil {
+		cfg.SyncStock = in.SyncStock
+	}
+	if in.SyncGodowns != nil {
+		cfg.SyncGodowns = in.SyncGodowns
+	}
+	if in.SyncProfile != nil {
+		cfg.SyncProfile = in.SyncProfile
 	}
 
 	if err := secrets.WriteLivekeeping(h.credFile, cfg); err != nil {

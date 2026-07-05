@@ -83,6 +83,16 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// AuthCredential holds the console-login password as a bcrypt hash. Single row
+// (id forced to 1). Seeded on first boot from OWNER_PASSWORD, after which the DB
+// is the source of truth (rotate it from the console). The hash is never
+// serialized to JSON.
+type AuthCredential struct {
+	ID           uint      `gorm:"primaryKey" json:"-"`
+	PasswordHash string    `gorm:"not null" json:"-"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // BusinessProfile is the single storefront record the WhatsApp agent answers
 // general questions about. Kept deliberately minimal — identity + contact only
 // (name, email, mobile numbers, opening hours). Per-branch street addresses live

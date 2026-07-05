@@ -3,10 +3,9 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getJobs, saveJobSchedule, runJob,
   createJob, updateJob, deleteJob, previewBroadcast,
-  getLivekeepingConfig, saveLivekeepingConfig, checkLivekeepingToken,
   JobScheduleInput, BroadcastConfig, BroadcastInput,
 } from "@/lib/api";
-import { RefreshCw, Play, CheckCircle2, XCircle, Clock, ShieldCheck, ShieldAlert, ShieldQuestion, Plus, Pencil, Trash2, Megaphone, Eye, Users } from "lucide-react";
+import { RefreshCw, Play, CheckCircle2, XCircle, Clock, Plus, Pencil, Trash2, Megaphone, Eye, Users } from "lucide-react";
 
 const inputCls = "w-full bg-panel-2 border border-line rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/40";
 
@@ -30,46 +29,32 @@ interface Job {
   last_run_at?: string | null;
   next_run_at?: string | null;
 }
-interface LkConfig {
-  configured: boolean;
-  token_preview: string;
-  company_id: string;
-  user_id: string;
-  last_sync_at?: string;
-  token_valid?: boolean | null;
-  token_checked_at?: string;
-  token_error?: string;
-}
-
+// Livekeeping now lives under Automation → Extensions; it's filtered out here.
 const LIVEKEEPING_KEY = "livekeeping_sync";
 
 export default function ScheduledJobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [lk, setLk] = useState<LkConfig | null>(null);
 
   const loadJobs = useCallback(() => {
     getJobs().then((r) => setJobs(r.data as Job[])).catch(() => {});
   }, []);
-  const loadLk = useCallback(() => {
-    getLivekeepingConfig().then((r) => setLk(r.data as LkConfig)).catch(() => {});
-  }, []);
 
-  useEffect(() => { loadJobs(); loadLk(); }, [loadJobs, loadLk]);
+  useEffect(() => { loadJobs(); }, [loadJobs]);
 
   // Poll while anything is running so status + last result stay live.
   const anyRunning = jobs.some((j) => j.last_status === "running");
   useEffect(() => {
     const interval = anyRunning ? 3000 : 15000;
-    const t = setInterval(() => { loadJobs(); loadLk(); }, interval);
+    const t = setInterval(() => { loadJobs(); }, interval);
     return () => clearInterval(t);
-  }, [anyRunning, loadJobs, loadLk]);
+  }, [anyRunning, loadJobs]);
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Job | null>(null);
 
   const broadcasts = jobs.filter((j) => j.type === "broadcast");
-  const systemJobs = jobs.filter((j) => j.type !== "broadcast");
-  const refresh = () => { loadJobs(); loadLk(); };
+  const systemJobs = jobs.filter((j) => j.type !== "broadcast" && j.key !== LIVEKEEPING_KEY);
+  const refresh = () => { loadJobs(); };
 
   function openCreate() { setEditing(null); setShowForm(true); }
   function openEdit(job: Job) { setEditing(job); setShowForm(true); }
@@ -83,7 +68,7 @@ export default function ScheduledJobsPage() {
           <p className="text-sm text-subtle mt-0.5">Send reminders to your customers and run automated tasks on a schedule.</p>
         </div>
         {!showForm && (
-          <button onClick={openCreate} className="flex items-center gap-2 bg-accent text-accent-ink hover:bg-accent-strong text-sm font-medium px-4 py-2 rounded-lg transition shrink-0">
+          <button onClick={openCreate} disabled={true} className="flex items-center gap-2 bg-accent text-accent-ink hover:bg-accent-strong text-sm font-medium px-4 py-2 rounded-lg transition shrink-0">
             <Plus size={16} /> Create reminder
           </button>
         )}
@@ -114,12 +99,7 @@ export default function ScheduledJobsPage() {
         <h2 className="text-xs uppercase tracking-wider text-subtle font-medium mb-3">System jobs</h2>
         <div className="space-y-4">
           {systemJobs.map((job) => (
-            <JobCard
-              key={job.key}
-              job={job}
-              lk={job.key === LIVEKEEPING_KEY ? lk : null}
-              onChanged={refresh}
-            />
+            <JobCard key={job.key} job={job} onChanged={refresh} />
           ))}
         </div>
       </section>
@@ -141,17 +121,7 @@ function StatusBadge({ status }: { status: Job["last_status"] }) {
   );
 }
 
-function TokenPill({ lk }: { lk: LkConfig }) {
-  if (lk.token_valid === true) {
-    return <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600"><ShieldCheck size={14} /> Token valid</span>;
-  }
-  if (lk.token_valid === false) {
-    return <span className="inline-flex items-center gap-1.5 text-xs text-red-600"><ShieldAlert size={14} /> Token expired — paste a fresh one</span>;
-  }
-  return <span className="inline-flex items-center gap-1.5 text-xs text-subtle"><ShieldQuestion size={14} /> Not checked yet</span>;
-}
-
-function JobCard({ job, lk, onChanged }: { job: Job; lk: LkConfig | null; onChanged: () => void }) {
+function JobCard({ job, onChanged }: { job: Job; onChanged: () => void }) {
   // Schedule form, seeded from the job. Not reset by background polling so the
   // owner's in-progress edits survive a refresh.
   const [enabled, setEnabled] = useState(job.enabled);
@@ -161,15 +131,7 @@ function JobCard({ job, lk, onChanged }: { job: Job; lk: LkConfig | null; onChan
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [scheduleMsg, setScheduleMsg] = useState("");
 
-  // Livekeeping credentials.
-  const [token, setToken] = useState("");
-  const [savingToken, setSavingToken] = useState(false);
-  const [checking, setChecking] = useState(false);
   const [runMsg, setRunMsg] = useState("");
-  // Company id is editable; shows the saved value until the owner edits it.
-  const [companyDraft, setCompanyDraft] = useState<string | null>(null);
-  const [savingCompany, setSavingCompany] = useState(false);
-  const companyId = companyDraft ?? (lk?.company_id || "");
 
   const running = job.last_status === "running";
 
@@ -190,41 +152,6 @@ function JobCard({ job, lk, onChanged }: { job: Job; lk: LkConfig | null; onChan
       setScheduleMsg(apiError(e) || "Could not save the schedule.");
     } finally {
       setSavingSchedule(false);
-    }
-  }
-
-  async function saveToken() {
-    if (!token.trim()) return;
-    setSavingToken(true);
-    try {
-      await saveLivekeepingConfig({ token: token.trim() });
-      setToken("");
-      // A new token's validity is unknown — check it right away.
-      await checkLivekeepingToken().catch(() => {});
-      onChanged();
-    } finally {
-      setSavingToken(false);
-    }
-  }
-
-  async function checkToken() {
-    setChecking(true);
-    try {
-      await checkLivekeepingToken();
-      onChanged();
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  async function saveCompany() {
-    setSavingCompany(true);
-    try {
-      await saveLivekeepingConfig({ company_id: companyId.trim() });
-      setCompanyDraft(null);
-      onChanged();
-    } finally {
-      setSavingCompany(false);
     }
   }
 
@@ -277,63 +204,6 @@ function JobCard({ job, lk, onChanged }: { job: Job; lk: LkConfig | null; onChan
         </div>
       )}
       {runMsg && <p className="text-sm text-danger">{runMsg}</p>}
-
-      {/* Livekeeping credentials — only for that job. */}
-      {lk && (
-        <div className="border-t border-line pt-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <label className="text-xs text-subtle">Livekeeping token</label>
-            <TokenPill lk={lk} />
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder={lk.configured ? `Saved (${lk.token_preview}) — paste a new one to replace` : "Paste your token here"}
-              className={inputCls}
-            />
-            <button
-              onClick={saveToken}
-              disabled={savingToken || !token.trim()}
-              className="text-sm font-medium px-4 py-2 rounded-lg border border-line text-ink hover:bg-panel-2 disabled:opacity-50 shrink-0"
-            >
-              {savingToken ? "Saving…" : "Save"}
-            </button>
-            <button
-              onClick={checkToken}
-              disabled={checking || !lk.configured}
-              className="text-sm font-medium px-4 py-2 rounded-lg border border-line text-ink hover:bg-panel-2 disabled:opacity-50 shrink-0"
-            >
-              {checking ? "Checking…" : "Check token"}
-            </button>
-          </div>
-          {lk.token_valid === false && lk.token_error && (
-            <p className="text-xs text-danger">{lk.token_error}</p>
-          )}
-
-          <div>
-            <label className="block text-xs text-subtle mb-1">Company ID</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={companyId}
-                onChange={(e) => setCompanyDraft(e.target.value)}
-                placeholder="Livekeeping company id"
-                className={inputCls}
-              />
-              <button
-                onClick={saveCompany}
-                disabled={savingCompany || companyId.trim() === (lk.company_id || "")}
-                className="text-sm font-medium px-4 py-2 rounded-lg border border-line text-ink hover:bg-panel-2 disabled:opacity-50 shrink-0"
-              >
-                {savingCompany ? "Saving…" : "Save"}
-              </button>
-            </div>
-            <p className="text-[11px] text-subtle mt-1">Your user ID is read from the token automatically. Each sync also refreshes your business profile from Livekeeping.</p>
-          </div>
-        </div>
-      )}
 
       {/* Schedule */}
       <div className="border-t border-line pt-4 space-y-3">

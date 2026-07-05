@@ -374,7 +374,16 @@ func (s *JobService) runLivekeeping(ctx context.Context) (models.JSONB, string, 
 		return nil, "", errors.New("paste your Livekeeping token first")
 	}
 
-	res, err := s.lk.Sync(ctx, SyncCreds{Token: cfg.Token, CompanyID: cfg.CompanyID, UserID: cfg.UserID})
+	scope := SyncScope{
+		Stock:   cfg.StockEnabled(),
+		Godowns: cfg.GodownsEnabled(),
+		Profile: cfg.ProfileEnabled(),
+	}
+	if !scope.Stock && !scope.Godowns && !scope.Profile {
+		return nil, "", errors.New("nothing selected to sync — enable at least one item under Extensions")
+	}
+
+	res, err := s.lk.Sync(ctx, SyncCreds{Token: cfg.Token, CompanyID: cfg.CompanyID, UserID: cfg.UserID}, scope)
 	if err != nil {
 		var authErr *AuthError
 		if errors.As(err, &authErr) {
@@ -396,22 +405,34 @@ func (s *JobService) runLivekeeping(ctx context.Context) (models.JSONB, string, 
 	_ = secrets.WriteLivekeeping(s.credFile, cfg)
 
 	// Freshly-synced stock may satisfy waitlisted customers — raise their alerts.
-	raised := s.st.RaiseReadyAlerts(ctx)
+	raised := 0
+	if scope.Stock {
+		raised = s.st.RaiseReadyAlerts(ctx)
+	}
 
-	msg := fmt.Sprintf("Imported %d of %d items (%d new, %d updated, %d removed)",
-		res.Fetched, res.Total, res.Created, res.Updated, res.Deleted)
-	if res.Errors > 0 {
-		msg += fmt.Sprintf(", %d skipped", res.Errors)
+	// Build a message from only the parts that actually ran.
+	parts := []string{}
+	if scope.Stock {
+		p := fmt.Sprintf("Imported %d of %d items (%d new, %d updated, %d removed)",
+			res.Fetched, res.Total, res.Created, res.Updated, res.Deleted)
+		if res.Errors > 0 {
+			p += fmt.Sprintf(", %d skipped", res.Errors)
+		}
+		parts = append(parts, p)
+	}
+	if scope.Profile && res.CompanyUpdated {
+		parts = append(parts, "business profile refreshed")
+	}
+	if scope.Godowns {
+		parts = append(parts, fmt.Sprintf("locations: %d new, %d updated, %d removed",
+			res.LocationsCreated, res.LocationsUpdated, res.LocationsDeleted))
+	}
+	msg := strings.Join(parts, " · ")
+	if msg == "" {
+		msg = "Nothing to sync."
 	}
 	if raised > 0 {
 		msg += fmt.Sprintf(" — %d waitlist alert(s) now ready to notify", raised)
-	}
-	if res.CompanyUpdated {
-		msg += " · business profile refreshed"
-	}
-	if res.LocationsCreated > 0 || res.LocationsUpdated > 0 || res.LocationsDeleted > 0 {
-		msg += fmt.Sprintf(" · locations: %d new, %d updated, %d removed",
-			res.LocationsCreated, res.LocationsUpdated, res.LocationsDeleted)
 	}
 	result := models.JSONB{
 		"total": res.Total, "fetched": res.Fetched, "created": res.Created,

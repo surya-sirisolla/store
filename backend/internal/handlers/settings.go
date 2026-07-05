@@ -137,6 +137,63 @@ func (h *SettingsHandler) DeleteLLMKeys(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
+// PromoteFallback makes the secondary provider the primary and demotes the old
+// primary to secondary (a swap), so the owner can shift which key/source the bot
+// uses first without re-entering anything.
+func (h *SettingsHandler) PromoteFallback(c *gin.Context) {
+	cfg := secrets.ReadLLMConfig(h.keysFile)
+	if cfg.Fallback == nil || !cfg.Fallback.Configured() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no secondary provider to promote"})
+		return
+	}
+	demoted := cfg.Primary
+	next := secrets.LLMConfig{Primary: *cfg.Fallback}
+	if demoted.Configured() {
+		next.Fallback = &demoted
+	}
+	if err := secrets.WriteLLMConfig(h.keysFile, next); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "promoted"})
+}
+
+// DeleteFallback removes only the secondary provider, leaving the primary intact.
+func (h *SettingsHandler) DeleteFallback(c *gin.Context) {
+	cfg := secrets.ReadLLMConfig(h.keysFile)
+	if cfg.Fallback == nil {
+		c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+		return
+	}
+	cfg.Fallback = nil
+	if err := secrets.WriteLLMConfig(h.keysFile, cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// DeletePrimary removes the primary provider. If a secondary exists it's promoted
+// to primary so the bot keeps working; otherwise all providers are cleared.
+func (h *SettingsHandler) DeletePrimary(c *gin.Context) {
+	cfg := secrets.ReadLLMConfig(h.keysFile)
+	if cfg.Fallback != nil && cfg.Fallback.Configured() {
+		next := secrets.LLMConfig{Primary: *cfg.Fallback}
+		if err := secrets.WriteLLMConfig(h.keysFile, next); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "primary removed; secondary promoted"})
+		return
+	}
+	// No secondary to fall back on — clear everything (env fallback, if any, applies).
+	if err := secrets.DeleteLLMConfig(h.keysFile); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
 func llmSource(path string, configured bool) string {
 	switch {
 	case !configured:

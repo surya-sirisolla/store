@@ -28,6 +28,7 @@ func Connect(dsn string) *gorm.DB {
 
 	if err := db.AutoMigrate(
 		&models.User{},
+		&models.AuthCredential{},
 		&models.BusinessProfile{},
 		&models.BusinessLocation{},
 		&models.Category{},

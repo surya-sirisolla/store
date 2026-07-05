@@ -28,6 +28,8 @@ export default api;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export const login = (password: string) => api.post("/api/auth/login", { password });
+export const changePassword = (current_password: string, new_password: string) =>
+  api.post("/api/auth/change-password", { current_password, new_password });
 
 export const getStats = () => api.get("/api/stats");
 
@@ -99,6 +101,9 @@ export interface LivekeepingCreds {
   token?: string;
   company_id?: string;
   user_id?: string;
+  sync_stock?: boolean;
+  sync_godowns?: boolean;
+  sync_profile?: boolean;
 }
 export const getLivekeepingConfig = () => api.get("/api/integrations/livekeeping");
 export const saveLivekeepingConfig = (data: LivekeepingCreds) =>
@@ -178,4 +183,9 @@ export const getLLMKeys = () => api.get("/api/settings/llm-keys");
 export const setLLMKeys = (data: { primary: LLMKeyInput; fallback?: LLMKeyInput | null }) =>
   api.put("/api/settings/llm-keys", data);
 export const deleteLLMKeys = () => api.delete("/api/settings/llm-keys");
+// Promote the secondary provider to primary (swaps the two).
+export const promoteLLMFallback = () => api.post("/api/settings/llm-keys/promote");
+// Delete just the primary (secondary is promoted if present) or just the secondary.
+export const deleteLLMPrimary = () => api.delete("/api/settings/llm-keys/primary");
+export const deleteLLMFallback = () => api.delete("/api/settings/llm-keys/fallback");
 export const detectLocalLLM = () => api.get("/api/settings/local-llm");

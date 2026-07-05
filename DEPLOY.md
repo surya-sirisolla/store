@@ -105,6 +105,33 @@ then re-enable the bot on `/admin/whatsapp` and re-scan the QR.
   ```
 - **Rollback**: tag releases (e.g. `:v2`) instead of only `:latest`, so rollback
   is `docker pull sjsurya/store-backend:v1 && ... up -d`.
-- The server currently serves **plain HTTP** with a weak console password. Point a
-  domain at `16.16.56.67` to enable free auto-HTTPS (change the `:80` block in
-  `Caddyfile` to your domain), and raise `OWNER_PASSWORD` in `~/store/.env`.
+- **Console password**: set a strong `OWNER_PASSWORD` in `~/store/.env` for the
+  **first boot** — it's hashed (bcrypt) into the database and the DB becomes the
+  source of truth. After first boot the env value is ignored; rotate the password
+  from the console under **Settings → Security** (you can then clear it from
+  `.env`). Login is rate-limited to 10 attempts / 5 min per IP. A stable
+  `JWT_SECRET` is still required (`openssl rand -hex 32`).
+
+---
+
+## Enable HTTPS (auto-TLS via Caddy)
+
+Caddy provisions a free Let's Encrypt certificate automatically once it's given a
+domain. You need a domain you control (a bare IP can't get a public cert).
+
+1. **DNS**: add an `A` record for your domain (e.g. `store.example.com`) pointing
+   at `16.16.56.67`, and make sure ports **80 and 443** are open in the EC2
+   security group. Wait for DNS to propagate (`dig +short store.example.com`).
+2. **Rebuild the frontend** with the HTTPS URL baked in — set
+   `PUBLIC_API_URL=https://store.example.com` in `.env.prod` on your Mac, then
+   `./deploy.sh` (or just the frontend build). The API is same-origin (`/api`),
+   so no port in the URL.
+3. **Server**: set `SITE_ADDRESS=store.example.com` in `~/store/.env`, then:
+   ```bash
+   cd ~/store
+   sudo docker compose -f docker-compose.prod.yml --env-file .env pull store-frontend
+   sudo docker compose -f docker-compose.prod.yml --env-file .env up -d store-frontend caddy
+   ```
+   Caddy fetches the cert on first request (watch `sudo docker logs bb_caddy`);
+   HTTP is redirected to HTTPS automatically. Leaving `SITE_ADDRESS` blank keeps
+   plain HTTP on `:80` (dev / no domain).

@@ -19,8 +19,10 @@ export default function LoginPage() {
       const res = await login(password);
       setToken(res.data.token);
       router.push("/admin/dashboard");
-    } catch {
-      setError("Incorrect password.");
+    } catch (e: unknown) {
+      const ax = e as { response?: { status?: number; data?: { error?: string } } };
+      // Surface the server's message (e.g. the rate-limit notice) when present.
+      setError(ax.response?.data?.error || "Incorrect password.");
     } finally {
       setLoading(false);
     }

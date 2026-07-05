@@ -448,6 +448,11 @@ func (c *WhatsAppNativeChannel) handleIncoming(evt *events.Message) {
 	if evt.Info.Chat.Server == types.BroadcastServer {
 		return
 	}
+	// This assistant only serves one-to-one customer chats. Ignore group messages
+	// entirely so it never replies in — or logs the members of — WhatsApp groups.
+	if evt.Info.Chat.Server == types.GroupServer {
+		return
+	}
 	senderID := evt.Info.Sender.String()
 	chatID := evt.Info.Chat.String()
 	content := evt.Message.GetConversation()

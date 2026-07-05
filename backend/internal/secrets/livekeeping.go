@@ -32,12 +32,25 @@ type LivekeepingConfig struct {
 	TokenValid     *bool  `json:"token_valid,omitempty"`
 	TokenCheckedAt string `json:"token_checked_at,omitempty"`
 	TokenError     string `json:"token_error,omitempty"`
+
+	// Sync scope — which parts of Livekeeping each sync run (manual or scheduled)
+	// imports. Pointers so an older config with these absent is treated as "all
+	// enabled" (the previous behavior); nil ⇒ enabled.
+	SyncStock   *bool `json:"sync_stock,omitempty"`
+	SyncGodowns *bool `json:"sync_godowns,omitempty"`
+	SyncProfile *bool `json:"sync_profile,omitempty"`
 }
 
 // Configured reports whether a token is present (the one thing sync needs).
 func (c LivekeepingConfig) Configured() bool {
 	return strings.TrimSpace(c.Token) != ""
 }
+
+// StockEnabled / GodownsEnabled / ProfileEnabled report whether that part is in
+// scope for a sync. A nil pointer (older config) means enabled.
+func (c LivekeepingConfig) StockEnabled() bool   { return c.SyncStock == nil || *c.SyncStock }
+func (c LivekeepingConfig) GodownsEnabled() bool { return c.SyncGodowns == nil || *c.SyncGodowns }
+func (c LivekeepingConfig) ProfileEnabled() bool { return c.SyncProfile == nil || *c.SyncProfile }
 
 // ReadLivekeeping loads the config, filling in the default company/user ids when
 // they're blank so callers always get a usable payload.

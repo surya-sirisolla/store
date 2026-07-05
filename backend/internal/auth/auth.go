@@ -4,22 +4,29 @@
 package auth
 
 import (
-	"crypto/subtle"
 	"errors"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const sessionTTL = 24 * time.Hour
 
-// CheckPassword compares the supplied password against the configured admin
-// password in constant time, to avoid leaking length/prefix via timing.
-func CheckPassword(supplied, configured string) bool {
-	if configured == "" {
+// HashPassword returns a bcrypt hash of the password, suitable for storing in
+// the database. (bcrypt only uses the first 72 bytes of the input.)
+func HashPassword(pw string) (string, error) {
+	b, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	return string(b), err
+}
+
+// CheckHash reports whether pw matches the stored bcrypt hash. bcrypt's compare
+// is constant-time with respect to the hash, so it doesn't leak timing.
+func CheckHash(pw, hash string) bool {
+	if hash == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(supplied), []byte(configured)) == 1
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
 }
 
 // IssueToken returns a signed session token valid for sessionTTL.

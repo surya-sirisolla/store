@@ -36,6 +36,7 @@ export default function ListingsPage() {
   const [page, setPage] = useState(1);
   const [q, setQ] = useState("");
   const [catFilter, setCatFilter] = useState("");
+  const [stockFilter, setStockFilter] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", quantity: "", price: "", category_id: 0 });
   const [saving, setSaving] = useState(false);
@@ -44,13 +45,13 @@ export default function ListingsPage() {
   const searching = q.trim() !== "";
 
   const load = () => {
-    getListings({ page, q, category_id: catFilter || undefined }).then((r) => {
+    getListings({ page, q, category_id: catFilter || undefined, stock: stockFilter || undefined }).then((r) => {
       setListings(r.data.data);
       setTotal(r.data.total);
     });
   };
 
-  useEffect(() => { load(); }, [page, q, catFilter]);
+  useEffect(() => { load(); }, [page, q, catFilter, stockFilter]);
   useEffect(() => { getCategories().then((r) => setCats(flatCats(r.data))); }, []);
 
   async function submit(e: React.FormEvent) {
@@ -155,6 +156,13 @@ export default function ListingsPage() {
         <select value={catFilter} onChange={(e) => { setCatFilter(e.target.value); setPage(1); }} className="bg-panel-2 border border-line rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40">
           <option value="">All Categories</option>
           {cats.map((c) => <option key={c.id} value={c.id}>{"—".repeat(c.level)} {c.name}</option>)}
+        </select>
+        <select value={stockFilter} onChange={(e) => { setStockFilter(e.target.value); setPage(1); }} className="bg-panel-2 border border-line rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40">
+          <option value="">All stock</option>
+          <option value="available">Available (&gt; 0)</option>
+          <option value="out">Out of stock (0)</option>
+          <option value="negative">Negative (&lt; 0)</option>
+          <option value="unknown">No quantity</option>
         </select>
       </div>
 

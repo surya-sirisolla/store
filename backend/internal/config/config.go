@@ -53,8 +53,9 @@ type Config struct {
 	// The owner-console assistant proxies chat to its console channel.
 	PicoclawURL string
 
-	// OwnerPassword gates the owner-console login (POST /api/auth/login). Set
-	// this before exposing the console publicly.
+	// OwnerPassword seeds the console-login password into the database on the
+	// FIRST boot only (hashed with bcrypt). After that the DB is the source of
+	// truth and this is ignored — rotate the password from the console.
 	OwnerPassword string
 
 	// JWTSecret signs the session tokens issued at login.

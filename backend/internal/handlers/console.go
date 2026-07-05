@@ -86,10 +86,12 @@ func (h *ConsoleHandler) ListListings(c *gin.Context) {
 	}
 	const limit = 15
 
+	stock := c.Query("stock")
+
 	// Free-text search uses the shared tokenized search; otherwise a plain page.
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
 		items, err := h.st.SearchListings(c.Request.Context(), store.SearchParams{
-			Query: q, Category: c.Query("category"), Limit: limit,
+			Query: q, Category: c.Query("category"), Limit: limit, Stock: stock,
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -102,6 +104,9 @@ func (h *ConsoleHandler) ListListings(c *gin.Context) {
 	query := h.db.Model(&models.Listing{})
 	if cat := c.Query("category_id"); cat != "" {
 		query = query.Where("category_id = ?", cat)
+	}
+	if cond := store.StockCondition(stock); cond != "" {
+		query = query.Where(cond)
 	}
 
 	var total int64

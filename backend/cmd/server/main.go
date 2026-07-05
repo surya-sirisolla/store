@@ -2,8 +2,12 @@
 package main
 
 import (
+	"context"
 	"log"
+	"strings"
+	"time"
 
+	"store/backend/internal/auth"
 	"store/backend/internal/config"
 	"store/backend/internal/db"
 	"store/backend/internal/handlers"
@@ -30,6 +34,9 @@ func main() {
 	secrets.MigrateLegacyKey(cfg.AnthropicKeyFile, cfg.LLMKeysFile)
 
 	st := store.New(database)
+	// Seed the console-login password into the DB on first boot (then the DB is
+	// the source of truth — rotate it from the console).
+	bootstrapOwnerPassword(st, cfg)
 	// Resolve the Claude key at call time for the AI extraction feature: the
 	// owner-set keys file wins (primary or fallback claude key), else env.
 	keyFunc := func() string { return secrets.ReadAnthropic(cfg.LLMKeysFile) }
@@ -53,7 +60,7 @@ func main() {
 	settingsH := handlers.NewSettingsHandler(cfg.LLMKeysFile)
 	ingestH := handlers.NewIngestHandler(st, cfg.InternalToken)
 	assistantH := handlers.NewAssistantHandler(cfg.PicoclawURL, cfg.InternalToken)
-	authH := handlers.NewAuthHandler(cfg.OwnerPassword, cfg.JWTSecret)
+	authH := handlers.NewAuthHandler(st, cfg.JWTSecret)
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -67,9 +74,9 @@ func main() {
 	// Internal: the bot reports every inbound message here (token-guarded).
 	r.POST("/internal/bot/contact-seen", ingestH.ContactSeen)
 
-	// Login is the one public /api route; everything else requires the
-	// session token it issues.
-	r.POST("/api/auth/login", authH.Login)
+	// Login is the one public /api route; everything else requires the session
+	// token it issues. Rate-limited per IP to blunt brute-force attempts.
+	r.POST("/api/auth/login", handlers.RateLimit(10, 5*time.Minute), authH.Login)
 
 	// Single-operator console, gated behind the shared admin password.
 	api := r.Group("/api")
@@ -113,6 +120,9 @@ func main() {
 		// Outbound WhatsApp: send a one-off test message (foundation for broadcasts).
 		api.POST("/bot/whatsapp/test-send", broadcastH.TestSend)
 
+		// Rotate the console-login password (requires the current one).
+		api.POST("/auth/change-password", authH.ChangePassword)
+
 		api.GET("/business-profile", consoleH.GetProfile)
 		api.PUT("/business-profile", consoleH.UpdateProfile)
 
@@ -144,6 +154,9 @@ func main() {
 		api.GET("/settings/llm-keys", settingsH.GetLLMKeys)
 		api.PUT("/settings/llm-keys", settingsH.SetLLMKeys)
 		api.DELETE("/settings/llm-keys", settingsH.DeleteLLMKeys)
+		api.POST("/settings/llm-keys/promote", settingsH.PromoteFallback)
+		api.DELETE("/settings/llm-keys/primary", settingsH.DeletePrimary)
+		api.DELETE("/settings/llm-keys/fallback", settingsH.DeleteFallback)
 		api.GET("/settings/local-llm", settingsH.DetectLocalLLM)
 	}
 
@@ -153,16 +166,40 @@ func main() {
 	}
 }
 
-// requireAuthSecrets fails fast if the console would otherwise boot without a
-// real password or a stable signing secret — generating one ephemerally would
-// either be guessable or change (and invalidate every session) on restart.
+// requireAuthSecrets fails fast without a stable signing secret — generating one
+// ephemerally would either be guessable or change (and invalidate every session)
+// on restart. The login password lives in the DB and is handled separately by
+// bootstrapOwnerPassword.
 func requireAuthSecrets(cfg *config.Config) {
-	if cfg.OwnerPassword == "" {
-		log.Fatal("OWNER_PASSWORD is not set. Set it in .env before starting the console (this is the password used to log in).")
-	}
 	if cfg.JWTSecret == "" {
 		log.Fatal("JWT_SECRET is not set. Set it in .env before starting the console, e.g.: openssl rand -hex 32")
 	}
+}
+
+// bootstrapOwnerPassword seeds the console-login password into the database on
+// first boot from OWNER_PASSWORD, after which the DB is the source of truth
+// (env is ignored and the owner rotates it from the console). Fatals if no
+// password has ever been set and none is provided to seed one.
+func bootstrapOwnerPassword(st *store.Store, cfg *config.Config) {
+	ctx := context.Background()
+	hash, err := st.GetOwnerPasswordHash(ctx)
+	if err != nil {
+		log.Fatalf("checking console password: %v", err)
+	}
+	if hash != "" {
+		return // already set — the DB wins, OWNER_PASSWORD is ignored
+	}
+	if strings.TrimSpace(cfg.OwnerPassword) == "" {
+		log.Fatal("No console password is set. Set OWNER_PASSWORD in .env for the first boot; it will be stored (hashed) in the database, and you can rotate it from the console afterwards.")
+	}
+	h, err := auth.HashPassword(cfg.OwnerPassword)
+	if err != nil {
+		log.Fatalf("hashing console password: %v", err)
+	}
+	if err := st.SetOwnerPassword(ctx, h); err != nil {
+		log.Fatalf("storing console password: %v", err)
+	}
+	log.Println("Console password seeded into the database from OWNER_PASSWORD.")
 }
 
 // seedOwner creates the single owner record on first boot from env config. It

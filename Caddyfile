@@ -1,4 +1,8 @@
-:80 {
+# Site address is env-driven:
+#   SITE_ADDRESS=example.com   → Caddy auto-provisions a Let's Encrypt cert,
+#                                serves HTTPS on 443, and redirects HTTP→HTTPS.
+#   SITE_ADDRESS unset         → falls back to plain HTTP on :80 (dev / no domain).
+{$SITE_ADDRESS::80} {
 	handle /api/* {
 		reverse_proxy store-backend:8080
 	}

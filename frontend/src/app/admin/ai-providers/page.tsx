@@ -1,7 +1,10 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
-import { getLLMKeys, setLLMKeys, deleteLLMKeys, detectLocalLLM } from "@/lib/api";
-import { KeyRound, CheckCircle, Trash2, Pencil, Bot, Zap, Cpu, Server, Sparkles, Cloud, RefreshCw } from "lucide-react";
+import {
+  getLLMKeys, setLLMKeys, deleteLLMKeys, detectLocalLLM,
+  promoteLLMFallback, deleteLLMPrimary, deleteLLMFallback,
+} from "@/lib/api";
+import { KeyRound, CheckCircle, Trash2, Pencil, Bot, Zap, Cpu, Server, Sparkles, Cloud, RefreshCw, ArrowUpCircle } from "lucide-react";
 
 type ProviderId = "claude" | "gemini" | "openai" | "local";
 
@@ -112,7 +115,7 @@ function ProviderField({
   );
 }
 
-function ProviderRow({ role, view }: { role: string; view: KeyView }) {
+function ProviderRow({ role, view, actions }: { role: string; view: KeyView; actions?: React.ReactNode }) {
   const isLocal = view.provider === "local";
   return (
     <div className="flex items-center justify-between gap-3 py-2.5">
@@ -127,11 +130,14 @@ function ProviderRow({ role, view }: { role: string; view: KeyView }) {
           </p>
         </div>
       </div>
-      {isLocal ? (
-        <span className="text-[11px] bg-accent/15 text-accent rounded-full px-2 py-0.5 shrink-0">Local · free</span>
-      ) : (
-        <span className="text-[11px] bg-panel-2 text-subtle border border-line rounded-full px-2 py-0.5 shrink-0">Cloud</span>
-      )}
+      <div className="flex items-center gap-2 shrink-0">
+        {isLocal ? (
+          <span className="text-[11px] bg-accent/15 text-accent rounded-full px-2 py-0.5">Local · free</span>
+        ) : (
+          <span className="text-[11px] bg-panel-2 text-subtle border border-line rounded-full px-2 py-0.5">Cloud</span>
+        )}
+        {actions}
+      </div>
     </div>
   );
 }
@@ -178,9 +184,32 @@ function ProvidersForm({ keyInfo, local, onSaved }: { keyInfo: KeyInfo | null; l
   }
 
   async function remove() {
-    if (!confirm("Remove the saved providers? The bot will stop until you add one.")) return;
+    if (!confirm("Remove ALL saved providers? The bot will stop until you add one.")) return;
     setBusy(true); await deleteLLMKeys(); setBusy(false); onSaved();
   }
+
+  async function promote() {
+    setBusy(true);
+    try { await promoteLLMFallback(); onSaved(); } finally { setBusy(false); }
+  }
+  async function removePrimary() {
+    const hasFallback = !!keyInfo?.fallback;
+    const msg = hasFallback
+      ? "Delete the primary provider? Your secondary will take over as the primary."
+      : "Delete the primary provider? The bot will stop until you add one.";
+    if (!confirm(msg)) return;
+    setBusy(true);
+    try { await deleteLLMPrimary(); onSaved(); } finally { setBusy(false); }
+  }
+  async function removeFallback() {
+    if (!confirm("Remove the secondary provider? The primary stays in place.")) return;
+    setBusy(true);
+    try { await deleteLLMFallback(); onSaved(); } finally { setBusy(false); }
+  }
+
+  // Per-provider actions only make sense for console-managed keys; env-based keys
+  // are read-only here.
+  const canEdit = keyInfo?.source === "console";
 
   return (
     <div className="bg-panel rounded-xl border border-line p-5 lg:p-6">
@@ -195,9 +224,30 @@ function ProvidersForm({ keyInfo, local, onSaved }: { keyInfo: KeyInfo | null; l
 
       {configured && !editing && (
         <div className="bg-panel-2 rounded-lg border border-line px-4 divide-y divide-line">
-          <ProviderRow role="Primary" view={keyInfo!.primary!} />
+          <ProviderRow
+            role="Primary"
+            view={keyInfo!.primary!}
+            actions={canEdit && (
+              <button onClick={removePrimary} disabled={busy} title="Delete primary" className="text-subtle hover:text-danger disabled:opacity-50" aria-label="Delete primary">
+                <Trash2 size={14} />
+              </button>
+            )}
+          />
           {keyInfo?.fallback
-            ? <ProviderRow role="Secondary" view={keyInfo.fallback} />
+            ? <ProviderRow
+                role="Secondary"
+                view={keyInfo.fallback}
+                actions={canEdit && (
+                  <>
+                    <button onClick={promote} disabled={busy} title="Make this the primary" className="flex items-center gap-1 text-xs text-accent hover:underline disabled:opacity-50">
+                      <ArrowUpCircle size={14} /> Make primary
+                    </button>
+                    <button onClick={removeFallback} disabled={busy} title="Delete secondary" className="text-subtle hover:text-danger disabled:opacity-50" aria-label="Delete secondary">
+                      <Trash2 size={14} />
+                    </button>
+                  </>
+                )}
+              />
             : <p className="text-xs text-subtle py-2.5">No secondary configured</p>}
         </div>
       )}
@@ -208,7 +258,7 @@ function ProvidersForm({ keyInfo, local, onSaved }: { keyInfo: KeyInfo | null; l
           <div className="flex gap-4">
             <button onClick={() => setEditing(true)} className="flex items-center gap-1 text-sm text-accent hover:underline"><Pencil size={13} /> Edit</button>
             {keyInfo?.source === "console" && (
-              <button onClick={remove} disabled={busy} className="flex items-center gap-1 text-sm text-danger hover:underline"><Trash2 size={13} /> Delete</button>
+              <button onClick={remove} disabled={busy} className="flex items-center gap-1 text-sm text-danger hover:underline"><Trash2 size={13} /> Remove all</button>
             )}
           </div>
         </div>
