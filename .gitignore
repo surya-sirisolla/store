@@ -21,9 +21,11 @@ service-account*.json
 *.sqlite3
 *.db
 
-# ── Private ops notes (real server IPs, keys, hostnames) ───────────────────
-# DEPLOY.md is the sanitized, public version; keep your real runbook local.
+# ── Private ops notes (real server IPs, SSH keys, hostnames) ───────────────
+# Deployment runbooks describe your own infrastructure — keep them out of the
+# public repo.
 *.local.md
+DEPLOY.md
 DEPLOY.local.md
 
 # Local scratch / DB dumps

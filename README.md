@@ -192,8 +192,7 @@ database, and its own WhatsApp number.
 - **`ADMIN_PASSWORD` has no default** and the server refuses to start without it,
   so a deployment can never come up on a well-known password.
 - **Put it behind HTTPS** before exposing it publicly — set `SITE_ADDRESS` to your
-  domain and Caddy provisions a Let's Encrypt certificate automatically. See
-  [DEPLOY.md](DEPLOY.md).
+  domain and Caddy provisions a Let's Encrypt certificate automatically.
 - **The agent replies to anyone who messages your number** by default. Restrict it
   with PicoClaw's `allow_from` if you want a closed pilot.
 - **Don't point the test suite at your real database** — it truncates every table.
@@ -251,9 +250,18 @@ docker-compose.prod.yml  Production stack (bundles its own Postgres)
 
 ## Deployment
 
-[DEPLOY.md](DEPLOY.md) covers building and pushing images, updating a server, and
-enabling HTTPS with Caddy. Replace the `YOUR_SERVER_IP` / `YOUR_DOCKERHUB_USER`
-placeholders with your own.
+`docker-compose.prod.yml` is the production stack. It pulls pre-built images and
+runs [Caddy](https://caddyserver.com) in front, which provisions a free Let's
+Encrypt certificate once you point `SITE_ADDRESS` at a domain whose DNS resolves
+to the server (ports 80 and 443 open).
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env up -d
+```
+
+Build the frontend with `PUBLIC_API_URL` set to the URL your browser will use —
+it's baked in at build time, so `http://localhost:8080` won't work from a remote
+machine.
 
 > Note: `docker-compose.prod.yml` bundles its own Postgres and does **not** read
 > `DATABASE_URL`. If you want production on a managed database, add `DATABASE_URL`

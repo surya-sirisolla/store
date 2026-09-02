@@ -2,7 +2,7 @@
 # deploy.sh — build the production images on your Mac and push them to Docker Hub.
 # Run from the repo root. Prereqs: `docker login` (Docker Hub) + Docker buildx.
 #
-# The EC2 server then pulls these images (see DEPLOY.md for the server-side steps).
+# Your server then pulls these images and restarts the stack.
 #
 # Override the target platform if your EC2 is Graviton/arm64:
 #   PLATFORM=linux/arm64 ./deploy.sh
@@ -35,4 +35,4 @@ docker buildx build --platform "$PLATFORM" \
   -t "$DOCKERHUB_USER/store-picoclaw:latest" ./picoclaw --push
 
 echo "✅ Pushed $DOCKERHUB_USER/{store-backend,store-frontend,store-picoclaw}:latest"
-echo "   Next: run the server-side steps in DEPLOY.md on the EC2 box."
+echo "   Next: pull the new images on your server and restart the stack."
