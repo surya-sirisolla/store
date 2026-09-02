@@ -3,13 +3,13 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { QRCodeSVG } from "qrcode.react";
 import {
-  getWhatsAppStatus, enableBot, disableBot,
-  getBotStats, getBotContacts,
+  getWhatsAppStatus, enableBot, disableBot, removeWhatsApp,
+  getBotStats, getBotContacts, getBotContactActivity,
 } from "@/lib/api";
 import {
   Smartphone, CheckCircle, Loader2, AlertTriangle, RefreshCw, KeyRound,
   Power, PowerOff, Unlink, Users, Bell, Activity, MessageSquare, Phone, Shield,
-  Copy, Check, ExternalLink, ChevronDown,
+  Copy, Check, ExternalLink, ChevronDown, Trash2,
 } from "lucide-react";
 
 type Status =
@@ -60,6 +60,94 @@ function StatCard({ label, value, icon }: { label: string; value: number; icon: 
   );
 }
 
+interface Activity {
+  id: number;
+  tool: string;
+  query: string;
+  result_summary: string;
+  created_at: string;
+}
+
+// Friendly labels for the bot's tool calls, so the activity reads like plain
+// English instead of raw tool names.
+const TOOL_LABEL: Record<string, string> = {
+  search_listings: "Searched",
+  get_business_info: "Asked about the business",
+  list_categories: "Browsed categories",
+  request_alert: "Asked to be notified",
+  staff_recent_contacts: "Viewed who messaged",
+  staff_pending_alerts: "Viewed pending alerts",
+};
+const toolLabel = (t: string) => TOOL_LABEL[t] ?? t;
+
+// ContactRow is one person in "Who messaged the bot". Clicking it expands their
+// activity — every query/search/request they made — fetched on first open.
+function ContactRow({ ct }: { ct: Contact }) {
+  const [open, setOpen] = useState(false);
+  const [activity, setActivity] = useState<Activity[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next && activity === null) {
+      setLoading(true);
+      try {
+        const r = await getBotContactActivity(ct.phone);
+        setActivity(r.data?.activity || []);
+      } catch {
+        setActivity([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+  }
+
+  return (
+    <div className="border-b border-line last:border-0">
+      <button onClick={toggle} className="w-full flex items-start gap-3 py-2.5 text-left rounded-lg px-1 -mx-1 hover:bg-panel-2/40 transition">
+        <div className="grid place-items-center w-8 h-8 rounded-full bg-panel-2 text-muted shrink-0 mt-0.5"><Phone size={13} /></div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-ink flex items-center gap-1.5 flex-wrap">
+            <span className="font-mono">{ct.phone}</span>
+            {ct.display_name && <span className="text-muted font-normal">· {ct.display_name}</span>}
+            {ct.is_staff && <span className="flex items-center gap-0.5 text-[11px] bg-accent/15 text-accent rounded px-1.5 py-0.5"><Shield size={10} /> Staff</span>}
+          </p>
+          {ct.last_query && <p className="text-xs text-subtle truncate mt-0.5">last: “{ct.last_query}”</p>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-right whitespace-nowrap">
+            <p className="text-xs text-muted">{ct.interactions}×</p>
+            <p className="text-xs text-subtle">{timeAgo(ct.last_seen)}</p>
+          </div>
+          <ChevronDown size={15} className={`text-subtle transition-transform ${open ? "rotate-180" : ""}`} />
+        </div>
+      </button>
+
+      {open && (
+        <div className="pl-11 pr-1 pb-3">
+          {loading ? (
+            <p className="text-xs text-subtle py-2 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> Loading chat activity…</p>
+          ) : !activity || activity.length === 0 ? (
+            <p className="text-xs text-subtle py-2">No recorded activity for this number.</p>
+          ) : (
+            <ul className="space-y-1.5 border-l border-line pl-3">
+              {activity.map((a) => (
+                <li key={a.id} className="text-xs leading-relaxed">
+                  <span className="text-ink font-medium">{toolLabel(a.tool)}</span>
+                  {a.query && <span className="text-muted"> “{a.query}”</span>}
+                  {a.result_summary && <span className="text-subtle"> — {a.result_summary}</span>}
+                  <span className="text-subtle"> · {timeAgo(a.created_at)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function WhatsAppPage() {
   const [data, setData] = useState<StatusResp | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,6 +155,8 @@ export default function WhatsAppPage() {
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectPhase, setReconnectPhase] = useState("");
   const [copied, setCopied] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   const [stats, setStats] = useState<BotStats | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -92,6 +182,23 @@ export default function WhatsAppPage() {
       setLoading(true); await loadStatus();
     } finally { setToggling(false); }
   }, [data?.status, loadStatus]);
+
+  // removeConnection fully unlinks the WhatsApp number: the bot forgets the
+  // pairing and comes back to a fresh QR. Distinct from disabling, which keeps
+  // the number linked.
+  const removeConnection = useCallback(async () => {
+    setRemoving(true);
+    setConfirmRemove(false);
+    try {
+      await removeWhatsApp();
+      // Give the supervisor a moment to tear down the gateway and wipe the
+      // pairing store before we re-read status (it'll move to starting → QR).
+      await new Promise((r) => setTimeout(r, RECONNECT_SETTLE_MS));
+      setConnOpen(true);
+      setLoading(true);
+      await loadStatus();
+    } finally { setRemoving(false); }
+  }, [loadStatus]);
 
   const reconnect = useCallback(async () => {
     setReconnecting(true);
@@ -266,6 +373,38 @@ export default function WhatsAppPage() {
               </button>
             </div>
           )}
+
+          {hasPairing(status) && (
+            <div className="mt-4 pt-4 border-t border-line">
+              {removing ? (
+                <p className="text-sm text-muted flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> Removing WhatsApp connection…</p>
+              ) : confirmRemove ? (
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <p className="text-sm font-medium text-danger">Remove this WhatsApp connection?</p>
+                    <p className="text-xs text-subtle max-w-md">The linked number is fully unlinked and you&apos;ll need to scan a new QR to connect again. This does not affect your listings or data.</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button onClick={() => setConfirmRemove(false)} className="text-sm font-medium px-3 py-2 rounded-lg bg-panel-2 border border-line text-muted hover:text-ink">Cancel</button>
+                    <button onClick={removeConnection} className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg bg-danger text-white hover:bg-danger/90">
+                      <Trash2 size={15} /> Remove connection
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-ink">Remove connection</p>
+                    <p className="text-xs text-subtle">Fully unlink this number. Different from disabling — you&apos;ll scan a new QR next time.</p>
+                  </div>
+                  <button onClick={() => setConfirmRemove(true)}
+                    className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg bg-panel-2 border border-line text-danger hover:bg-danger/10">
+                    <Unlink size={15} /> Remove
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           </div>
         )}
       </div>
@@ -300,21 +439,7 @@ export default function WhatsAppPage() {
               </p>
             )}
             {contacts.map((ct) => (
-              <div key={ct.id} className="flex items-start gap-3 py-2.5 border-b border-line last:border-0">
-                <div className="grid place-items-center w-8 h-8 rounded-full bg-panel-2 text-muted shrink-0 mt-0.5"><Phone size={13} /></div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-ink flex items-center gap-1.5 flex-wrap">
-                    <span className="font-mono">{ct.phone}</span>
-                    {ct.display_name && <span className="text-muted font-normal">· {ct.display_name}</span>}
-                    {ct.is_staff && <span className="flex items-center gap-0.5 text-[11px] bg-accent/15 text-accent rounded px-1.5 py-0.5"><Shield size={10} /> Staff</span>}
-                  </p>
-                  {ct.last_query && <p className="text-xs text-subtle truncate mt-0.5">last: “{ct.last_query}”</p>}
-                </div>
-                <div className="text-right whitespace-nowrap">
-                  <p className="text-xs text-muted">{ct.interactions}×</p>
-                  <p className="text-xs text-subtle">{timeAgo(ct.last_seen)}</p>
-                </div>
-              </div>
+              <ContactRow key={ct.id} ct={ct} />
             ))}
           </div>
         </div>
@@ -327,4 +452,11 @@ export default function WhatsAppPage() {
 // past the "no key" / loading states (i.e. a real running/paired state).
 function keyInfoReady(status?: Status): boolean {
   return status === "connected" || status === "disabled" || status === "waiting_for_scan" || status === "starting";
+}
+
+// hasPairing is true when a WhatsApp number is (or was) linked, so offering to
+// remove the connection makes sense. Not shown while starting/awaiting the first
+// scan or when no key is set — there's nothing paired to remove yet.
+function hasPairing(status?: Status): boolean {
+  return status === "connected" || status === "disabled" || status === "logged_out";
 }

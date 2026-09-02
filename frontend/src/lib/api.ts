@@ -27,7 +27,11 @@ api.interceptors.response.use(
 export default api;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-export const login = (password: string) => api.post("/api/auth/login", { password });
+// The console has a single admin login, set at install time via ADMIN_USER /
+// ADMIN_PASSWORD.
+export const login = (username: string, password: string) =>
+  api.post("/api/auth/login", { username, password });
+export const getMe = () => api.get("/api/me");
 export const changePassword = (current_password: string, new_password: string) =>
   api.post("/api/auth/change-password", { current_password, new_password });
 
@@ -153,6 +157,8 @@ export const deleteStaff = (id: number) => api.delete(`/api/staff/${id}`);
 export const getBotStats = () => api.get("/api/bot/stats");
 export const getBotContacts = (range?: string) =>
   api.get("/api/bot/contacts", { params: range ? { range } : {} });
+export const getBotContactActivity = (phone: string) =>
+  api.get("/api/bot/contact-activity", { params: { phone } });
 // ── Alerts (customer waitlist + restock-ready) ────────────────────────────────
 export type AlertStatus = "logged" | "ready" | "notified" | "dismissed";
 export const getAlerts = (status?: string) =>
@@ -171,6 +177,9 @@ export const getAssistantStatus = () => api.get("/api/assistant/status");
 export const getWhatsAppStatus = () => api.get("/api/bot/whatsapp/status");
 export const enableBot = () => api.post("/api/bot/whatsapp/enable");
 export const disableBot = () => api.post("/api/bot/whatsapp/disable");
+// removeWhatsApp fully unlinks the WhatsApp number (deletes the pairing and
+// shows a fresh QR), unlike disableBot which only pauses replies.
+export const removeWhatsApp = () => api.post("/api/bot/whatsapp/remove");
 
 // ── LLM provider keys (owner-only) ────────────────────────────────────────────
 export interface LLMKeyInput {

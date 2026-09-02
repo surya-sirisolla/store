@@ -12,10 +12,11 @@ import (
 // Stats returns the headline counts for the console dashboard.
 func (h *ConsoleHandler) Stats(c *gin.Context) {
 	var listings, categories, staff, interactions int64
-	h.db.Model(&models.Listing{}).Count(&listings)
-	h.db.Model(&models.Category{}).Count(&categories)
-	h.db.Model(&models.User{}).Where("role = ?", models.RoleStaff).Count(&staff)
-	h.db.Model(&models.BotActivity{}).Count(&interactions)
+	tdb := h.db
+	tdb.Model(&models.Listing{}).Count(&listings)
+	tdb.Model(&models.Category{}).Count(&categories)
+	tdb.Model(&models.User{}).Count(&staff)
+	tdb.Model(&models.BotActivity{}).Count(&interactions)
 	c.JSON(http.StatusOK, gin.H{
 		"listings":          listings,
 		"categories":        categories,
@@ -29,15 +30,16 @@ func (h *ConsoleHandler) BotStats(c *gin.Context) {
 	startOfDay := time.Now().Truncate(24 * time.Hour)
 
 	var totalQueries, queriesToday, searches, pendingAlerts, uniqueContacts, contactsToday int64
-	h.db.Model(&models.BotActivity{}).Count(&totalQueries)
-	h.db.Model(&models.BotActivity{}).Where("created_at >= ?", startOfDay).Count(&queriesToday)
-	h.db.Model(&models.BotActivity{}).Where("tool = ?", "search_listings").Count(&searches)
+	tdb := h.db
+	tdb.Model(&models.BotActivity{}).Count(&totalQueries)
+	tdb.Model(&models.BotActivity{}).Where("created_at >= ?", startOfDay).Count(&queriesToday)
+	tdb.Model(&models.BotActivity{}).Where("tool = ?", "search_listings").Count(&searches)
 	// "Pending" = anything not yet actioned: still logged or raised-and-waiting.
-	h.db.Model(&models.AlertRequest{}).Where("status IN ?", []string{"logged", "ready"}).Count(&pendingAlerts)
+	tdb.Model(&models.AlertRequest{}).Where("status IN ?", []string{"logged", "ready"}).Count(&pendingAlerts)
 	var readyAlerts int64
-	h.db.Model(&models.AlertRequest{}).Where("status = ?", "ready").Count(&readyAlerts)
-	h.db.Model(&models.Contact{}).Count(&uniqueContacts)
-	h.db.Model(&models.Contact{}).Where("last_seen >= ?", startOfDay).Count(&contactsToday)
+	tdb.Model(&models.AlertRequest{}).Where("status = ?", "ready").Count(&readyAlerts)
+	tdb.Model(&models.Contact{}).Count(&uniqueContacts)
+	tdb.Model(&models.Contact{}).Where("last_seen >= ?", startOfDay).Count(&contactsToday)
 
 	c.JSON(http.StatusOK, gin.H{
 		"total_interactions": totalQueries,
@@ -83,5 +85,21 @@ func (h *ConsoleHandler) BotActivityFeed(c *gin.Context) {
 	items := []models.BotActivity{}
 	h.db.Order("created_at DESC").Limit(100).Find(&items)
 	c.JSON(http.StatusOK, items)
+}
+
+// BotContactActivity returns one person's bot interactions (?phone=), most recent
+// first — what that contact searched for / asked the bot.
+func (h *ConsoleHandler) BotContactActivity(c *gin.Context) {
+	phone := c.Query("phone")
+	if phone == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "phone is required"})
+		return
+	}
+	items, err := h.st.ContactActivity(c.Request.Context(), phone, 200)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"activity": items, "count": len(items)})
 }
 

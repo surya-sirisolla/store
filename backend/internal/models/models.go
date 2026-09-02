@@ -7,15 +7,6 @@ import (
 	"time"
 )
 
-type Role string
-
-const (
-	// RoleOwner is the single business owner — full access.
-	RoleOwner Role = "owner"
-	// RoleStaff is an optional data-entry helper the owner creates.
-	RoleStaff Role = "staff"
-)
-
 // JSONB stores arbitrary JSON in a Postgres jsonb column.
 type JSONB map[string]interface{}
 
@@ -64,16 +55,14 @@ func (s *StringSlice) Scan(value interface{}) error {
 	return json.Unmarshal(bytes, s)
 }
 
-// User is the owner or a staff member. There's no console login — a User
-// record exists only to register someone's WhatsApp number so the bot can
-// recognize them for permission-scoped replies (e.g. staff-only tools).
-// Single-tenant: every user shares the one business's data, so there is no
-// tenant/admin linkage.
+// User is a staff member: someone the owner registers so the WhatsApp bot
+// recognizes their number and answers staff-only questions for them. Staff do
+// not log in — the console has a single admin account (see AuthCredential), so
+// there is no password and no role here.
 type User struct {
 	ID    uint   `gorm:"primaryKey" json:"id"`
 	Name  string `gorm:"not null" json:"name"`
 	Email string `gorm:"uniqueIndex;not null" json:"email"`
-	Role  Role   `gorm:"type:varchar(20);not null;default:'staff'" json:"role"`
 	// Phone is the person's WhatsApp number in E.164 form (e.g.
 	// +919876543210). It identifies them to the bot for permission-scoped
 	// replies and lets the business reach them with alerts.
@@ -83,12 +72,16 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// AuthCredential holds the console-login password as a bcrypt hash. Single row
-// (id forced to 1). Seeded on first boot from OWNER_PASSWORD, after which the DB
-// is the source of truth (rotate it from the console). The hash is never
-// serialized to JSON.
+// AuthCredential is the console's single admin login: a username plus a bcrypt
+// hash. One row only (id forced to 1). Seeded on first boot from ADMIN_USER /
+// ADMIN_PASSWORD, after which the database is the source of truth and the env
+// password is ignored — rotate it from the console's Security page. The hash is
+// never serialized to JSON.
+//
+// One deployment serves one business, so one admin account is all there is.
 type AuthCredential struct {
 	ID           uint      `gorm:"primaryKey" json:"-"`
+	Username     string    `gorm:"uniqueIndex;not null" json:"username"`
 	PasswordHash string    `gorm:"not null" json:"-"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -146,11 +139,11 @@ type BusinessLocation struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Category supports multi-level nesting via ParentID. Single-tenant: no admin scope.
+// Category supports multi-level nesting via ParentID.
 type Category struct {
-	ID        uint       `gorm:"primaryKey" json:"id"`
-	Name      string     `gorm:"not null" json:"name"`
-	Slug      string     `gorm:"not null" json:"slug"`
+	ID   uint   `gorm:"primaryKey" json:"id"`
+	Name string `gorm:"not null" json:"name"`
+	Slug string `gorm:"not null" json:"slug"`
 	ParentID  *uint      `json:"parent_id,omitempty"`
 	Parent    *Category  `gorm:"foreignKey:ParentID" json:"parent,omitempty"`
 	Children  []Category `gorm:"foreignKey:ParentID" json:"children,omitempty"`

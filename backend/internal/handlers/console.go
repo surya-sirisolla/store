@@ -13,8 +13,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// ConsoleHandler serves the single-tenant Owner console: categories, listings,
-// staff, business profile and bot monitoring. All data belongs to the one business.
+// ConsoleHandler serves the Owner console: categories, listings, staff, business
+// profile and bot monitoring. One deployment serves one business, so there is
+// nothing to scope — every route operates on the single catalog.
 type ConsoleHandler struct {
 	db *gorm.DB
 	st *store.Store
@@ -137,6 +138,12 @@ func (h *ConsoleHandler) CreateListing(c *gin.Context) {
 		return
 	}
 
+	var cat models.Category
+	if err := h.db.First(&cat, input.CategoryID).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "category not found"})
+		return
+	}
+
 	listing := models.Listing{
 		CategoryID:  input.CategoryID,
 		Name:        input.Name,
@@ -235,7 +242,7 @@ func (h *ConsoleHandler) DeleteListing(c *gin.Context) {
 
 func (h *ConsoleHandler) ListStaff(c *gin.Context) {
 	users := []models.User{}
-	h.db.Where("role = ?", models.RoleStaff).Find(&users)
+	h.db.Order("name").Find(&users)
 	c.JSON(http.StatusOK, users)
 }
 
@@ -258,7 +265,7 @@ func (h *ConsoleHandler) CreateStaff(c *gin.Context) {
 
 	user := models.User{
 		Name: input.Name, Email: input.Email,
-		Phone: phone, Role: models.RoleStaff, Active: true,
+		Phone: phone, Active: true,
 	}
 	if err := h.db.Create(&user).Error; err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "email already in use"})
@@ -288,7 +295,7 @@ func normalizePhone(raw string) (string, bool) {
 }
 
 func (h *ConsoleHandler) DeleteStaff(c *gin.Context) {
-	res := h.db.Where("role = ?", models.RoleStaff).Delete(&models.User{}, c.Param("id"))
+	res := h.db.Delete(&models.User{}, c.Param("id"))
 	if res.RowsAffected == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "staff not found"})
 		return

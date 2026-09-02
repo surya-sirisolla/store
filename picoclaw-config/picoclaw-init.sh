@@ -13,6 +13,7 @@ set -u
 HOME_DIR="${HOME:-/root}/.picoclaw"
 KEYS_FILE=/shared/llm_keys.json
 DISABLED_FILE=/shared/bot_disabled
+RESET_FILE=/shared/whatsapp_reset
 LOG=/shared/picoclaw.log
 
 mkdir -p "$HOME_DIR/workspace/memory" /shared
@@ -41,8 +42,12 @@ provider_base() {
 # A single token capturing everything that should trigger a (re)start: the keys
 # file's mtime and whether the owner has paused the bot.
 keys_mtime() { stat -c %Y "$KEYS_FILE" 2>/dev/null || echo 0; }
+# state_token also flips when the owner requests a WhatsApp "remove connection"
+# (RESET_FILE appears), so the running gateway is torn down and the loop re-runs
+# to delete the pairing store before starting fresh.
 state_token() {
-  if [ -f "$DISABLED_FILE" ]; then echo "$(keys_mtime)-off"; else echo "$(keys_mtime)-on"; fi
+  _r=""; [ -f "$RESET_FILE" ] && _r="-reset"
+  if [ -f "$DISABLED_FILE" ]; then echo "$(keys_mtime)-off$_r"; else echo "$(keys_mtime)-on$_r"; fi
 }
 
 # Read the owner-set providers (file wins; else fall back to the
@@ -106,6 +111,16 @@ render_config() {
 
 while true; do
   load_keys
+
+  # Owner asked to remove the WhatsApp connection: the gateway is already stopped
+  # (RESET_FILE flipped state_token, breaking the watch loop), so it's safe to
+  # delete the whatsmeow pairing store. Next start prints a fresh QR.
+  if [ -f "$RESET_FILE" ]; then
+    echo "Removing WhatsApp connection (owner requested) — deleting pairing store…"
+    rm -f "$HOME_DIR"/whatsapp/store.db "$HOME_DIR"/whatsapp/store.db-wal "$HOME_DIR"/whatsapp/store.db-shm
+    rm -f "$RESET_FILE"
+  fi
+
   if ! is_configured "$PRIMARY_PROV" "$PRIMARY_KEY" "$PRIMARY_BASE"; then
     echo "Waiting for an AI provider — set it in the Owner console (AI Providers)…"
     sleep 3

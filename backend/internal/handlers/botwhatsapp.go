@@ -17,10 +17,11 @@ type WhatsAppHandler struct {
 	logPath      string
 	keysFile     string
 	disabledFile string
+	resetFile    string
 }
 
-func NewWhatsAppHandler(logPath, keysFile, disabledFile string) *WhatsAppHandler {
-	return &WhatsAppHandler{logPath: logPath, keysFile: keysFile, disabledFile: disabledFile}
+func NewWhatsAppHandler(logPath, keysFile, disabledFile, resetFile string) *WhatsAppHandler {
+	return &WhatsAppHandler{logPath: logPath, keysFile: keysFile, disabledFile: disabledFile, resetFile: resetFile}
 }
 
 func (h *WhatsAppHandler) disabled() bool {
@@ -46,6 +47,24 @@ func (h *WhatsAppHandler) Enable(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "bot enabled"})
 }
 
+// Remove unlinks WhatsApp entirely: it drops a marker the PicoClaw supervisor
+// watches, which stops the gateway, deletes the whatsmeow pairing store, and
+// restarts so a fresh QR is shown. Unlike Disable (which keeps the pairing),
+// this fully forgets the linked number. Also clears any disabled flag so the
+// supervisor comes back up to present the QR. Owner-only.
+func (h *WhatsAppHandler) Remove(c *gin.Context) {
+	if err := os.WriteFile(h.resetFile, []byte("1"), 0o600); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// A removed connection should come back up to a fresh QR, not stay paused.
+	if err := os.Remove(h.disabledFile); err != nil && !os.IsNotExist(err) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "removing WhatsApp connection"})
+}
+
 // ansi strips terminal color codes so markers parse cleanly.
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
@@ -56,6 +75,10 @@ const (
 	markerOwnNumber = "WHATSAPP_OWN_NUMBER="
 	markerLoggedOut = "WHATSAPP_LOGGED_OUT"
 	markerKeyErr    = "api_key is required"
+	// markerOutdated is WhatsApp rejecting the bundled whatsmeow client version
+	// (HTTP 405). It refuses to issue a QR until the client is updated, so this
+	// is a hard error the owner must see rather than a transient reconnect.
+	markerOutdated = "Client outdated (405)"
 )
 
 // Status reports the WhatsApp connection state and, when pairing is pending, the
@@ -85,6 +108,7 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 	qr := ""
 	ownNumber := ""
 	qrIdx, loginSuccessIdx, connIdx, loggedOutIdx, keyErrIdx := -1, -1, -1, -1, -1
+	loginTimeoutIdx, outdatedIdx := -1, -1
 
 	for i, raw := range strings.Split(string(data), "\n") {
 		line := ansi.ReplaceAllString(raw, "")
@@ -104,8 +128,13 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 		}
 		if idx := strings.Index(line, markerLogin); idx >= 0 {
 			ev := strings.TrimSpace(line[idx+len(markerLogin):])
-			if strings.HasPrefix(ev, "success") {
+			switch {
+			case strings.HasPrefix(ev, "success"):
 				loginSuccessIdx = i
+			case strings.HasPrefix(ev, "timeout"):
+				// The QR pairing window expired without a scan. A new QR follows,
+				// so this is a transient "still pairing" signal — never connected.
+				loginTimeoutIdx = i
 			}
 		}
 		if strings.Contains(line, markerConnected) {
@@ -113,6 +142,9 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 		}
 		if strings.Contains(line, markerLoggedOut) {
 			loggedOutIdx = i
+		}
+		if strings.Contains(line, markerOutdated) {
+			outdatedIdx = i
 		}
 		if strings.Contains(line, markerKeyErr) {
 			keyErrIdx = i
@@ -135,6 +167,10 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 		{connIdx, "connected"},
 		{loginSuccessIdx, "connected"},
 		{loggedOutIdx, "logged_out"},
+		// These come after a transport-level "channel connected" when a fresh
+		// pairing fails, so being later in the log they correctly override it.
+		{loginTimeoutIdx, "starting"},
+		{outdatedIdx, "outdated"},
 		{keyErrIdx, "error"},
 	} {
 		if cand.idx > latest.idx {
@@ -149,6 +185,11 @@ func (h *WhatsAppHandler) Status(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status": "logged_out",
 			"detail": "WhatsApp was unlinked from this device. Disable then re-enable the bot to get a fresh QR code.",
+		})
+	case "outdated":
+		c.JSON(http.StatusOK, gin.H{
+			"status": "error",
+			"detail": "WhatsApp is refusing new pairings because the bot's WhatsApp client is outdated (error 405). The whatsmeow library needs updating and the bot rebuilt before it can reconnect.",
 		})
 	case "error":
 		c.JSON(http.StatusOK, gin.H{

@@ -21,6 +21,16 @@ service-account*.json
 *.sqlite3
 *.db
 
+# ── Private ops notes (real server IPs, keys, hostnames) ───────────────────
+# DEPLOY.md is the sanitized, public version; keep your real runbook local.
+*.local.md
+DEPLOY.local.md
+
+# Local scratch / DB dumps
+*.sql
+*.dump
+*.bak
+
 # ── Logs ───────────────────────────────────────────────────────────────────
 *.log
 
@@ -33,7 +43,7 @@ picoclaw-data/
 .vscode/
 *.swp
 
-# Claude Code local session data
+# Local assistant/editor session data
 .claude/
 
 # ── Go: backend build artifacts, test/coverage output ──────────────────────

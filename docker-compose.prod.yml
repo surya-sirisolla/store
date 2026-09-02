@@ -1,44 +1,28 @@
 name: business-bot
 
 services:
-  # ── Database ──────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:16-alpine
-    container_name: bb_postgres
-    environment:
-      POSTGRES_USER: ${DB_USER:-storeuser}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-storepass}
-      POSTGRES_DB: ${DB_NAME:-storedb}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-storeuser} -d ${DB_NAME:-storedb}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
   # ── API server (Owner console backend) ────────────────────────────────────
+  # The database is external (Neon) — set DATABASE_URL in .env. There is no
+  # bundled Postgres service.
   store-backend:
     image: ${DOCKERHUB_USER}/store-backend:latest
     container_name: bb_backend
     command: ["server"]
     environment:
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_USER: ${DB_USER:-storeuser}
-      DB_PASSWORD: ${DB_PASSWORD:-storepass}
-      DB_NAME: ${DB_NAME:-storedb}
+      # Required: the managed Postgres (Neon) connection string.
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env — this stack has no bundled Postgres}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OWNER_NAME: ${OWNER_NAME:-Owner}
-      OWNER_EMAIL: ${OWNER_EMAIL:-owner@business.local}
+      # Console admin, seeded on first boot. ADMIN_PASSWORD is required — the
+      # server refuses to start without it.
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       PORT: "8080"
       PICOCLAW_LOG_PATH: /shared/picoclaw.log
       ANTHROPIC_KEY_FILE: /shared/anthropic_key
       LLM_KEYS_FILE: /shared/llm_keys.json
       LIVEKEEPING_FILE: /shared/livekeeping.json
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-store-internal}
-      OWNER_PASSWORD: ${OWNER_PASSWORD:-}
+      # Optional: generated and persisted to /shared/jwt_secret when blank.
       JWT_SECRET: ${JWT_SECRET:-}
       PICOCLAW_URL: http://picoclaw:18790
       # Bot conversation store (shared from picoclaw) for the idle-chat cleanup job.
@@ -48,9 +32,6 @@ services:
       - bot_state:/shared
       # Shared with picoclaw so the "Reset idle chats" job can prune old sessions.
       - picoclaw_data:/picoclaw-data
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/healthz || exit 1"]
       interval: 10s
@@ -64,15 +45,10 @@ services:
     container_name: bb_mcp
     command: ["mcp"]
     environment:
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_USER: ${DB_USER:-storeuser}
-      DB_PASSWORD: ${DB_PASSWORD:-storepass}
-      DB_NAME: ${DB_NAME:-storedb}
+      # Must point at the SAME database as store-backend.
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env — this stack has no bundled Postgres}
       MCP_PORT: "9090"
     depends_on:
-      postgres:
-        condition: service_healthy
       store-backend:
         condition: service_started
     restart: unless-stopped
@@ -123,7 +99,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  pgdata:
   picoclaw_data:
   bot_state:
   caddy_data:

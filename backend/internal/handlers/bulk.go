@@ -65,6 +65,12 @@ func (h *BulkHandler) ConfirmImport(c *gin.Context) {
 		return
 	}
 
+		var cat models.Category
+	if err := h.db.First(&cat, catID).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "category not found"})
+		return
+	}
+
 	job := models.BulkUploadJob{FileName: fh.Filename, Status: "processing"}
 	h.db.Create(&job)
 

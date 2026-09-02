@@ -51,13 +51,17 @@ const (
 	livekeepingMaxBackoff  = 30 * time.Second       // ceiling for any single wait
 )
 
-// LivekeepingService performs the stock-item sync.
+// LivekeepingService performs the stock-item sync. Its store is scoped to the
+// primary (bot-served) business, and its raw db writes are filtered/stamped with
+// that same business id — so a sync only ever touches the primary tenant's
+// catalog, never another owner's data.
 type LivekeepingService struct {
 	db     *gorm.DB
 	st     *store.Store
 	client *http.Client
 }
 
+// NewLivekeepingService builds the Livekeeping stock-sync service.
 func NewLivekeepingService(db *gorm.DB, st *store.Store) *LivekeepingService {
 	return &LivekeepingService{
 		db:     db,
@@ -73,6 +77,20 @@ type SyncCreds struct {
 	UserID    string
 }
 
+// syncDetailCap bounds how many item names we keep per bucket, so a big sync
+// can't bloat the stored result. Counts remain exact; the lists are a sample.
+const syncDetailCap = 500
+
+// ChangedItem is one touched listing: its name, the quantity after this sync,
+// the quantity before it (only when it changed), and — for updates — which
+// fields changed.
+type ChangedItem struct {
+	Name   string   `json:"name"`
+	Qty    *int     `json:"qty,omitempty"`     // quantity after this sync
+	OldQty *int     `json:"old_qty,omitempty"` // quantity before (only when it changed)
+	Fields []string `json:"fields,omitempty"`  // for updates: which fields changed
+}
+
 // SyncResult summarizes what a sync did.
 type SyncResult struct {
 	Total   int `json:"total"`   // items reported by the API (totalCount)
@@ -81,6 +99,12 @@ type SyncResult struct {
 	Updated int `json:"updated"` // existing listings whose fields changed
 	Deleted int `json:"deleted"` // previously-synced listings gone from Livekeeping
 	Errors  int `json:"errors"`
+
+	// Detail — the actual items touched (capped at syncDetailCap each), with
+	// their quantities, so the console can show WHAT changed, not just how many.
+	CreatedItems []ChangedItem `json:"created_items,omitempty"`
+	UpdatedItems []ChangedItem `json:"updated_items,omitempty"`
+	DeletedItems []string      `json:"deleted_items,omitempty"`
 
 	CompanyUpdated bool `json:"company_updated"` // business profile refreshed from Livekeeping
 
@@ -296,17 +320,25 @@ func (s *LivekeepingService) Sync(ctx context.Context, creds SyncCreds, scope Sy
 		if sourceID != "" {
 			seen[sourceID] = true
 		}
-		outcome, err := s.upsertItem(ctx, it, existing)
+		up, err := s.upsertItem(ctx, it, existing)
 		if err != nil {
 			res.Errors++
 			continue
 		}
 		res.Fetched++
-		switch outcome {
+		name := strings.TrimSpace(it.StockItemName)
+		qty := up.qty
+		switch up.outcome {
 		case outcomeCreated:
 			res.Created++
+			if len(res.CreatedItems) < syncDetailCap {
+				res.CreatedItems = append(res.CreatedItems, ChangedItem{Name: name, Qty: &qty})
+			}
 		case outcomeUpdated:
 			res.Updated++
+			if len(res.UpdatedItems) < syncDetailCap {
+				res.UpdatedItems = append(res.UpdatedItems, ChangedItem{Name: name, Qty: &qty, OldQty: up.oldQty, Fields: up.fields})
+			}
 		}
 	}
 
@@ -315,6 +347,9 @@ func (s *LivekeepingService) Sync(ctx context.Context, creds SyncCreds, scope Sy
 	for id, l := range existing {
 		if !seen[id] {
 			stale = append(stale, l.ID)
+			if len(res.DeletedItems) < syncDetailCap {
+				res.DeletedItems = append(res.DeletedItems, l.Name)
+			}
 		}
 	}
 	if len(stale) > 0 {
@@ -801,20 +836,29 @@ const (
 	outcomeUpdated
 )
 
+// upsertResult reports what upsertItem did, plus the new quantity, the previous
+// quantity (when it changed), and the field names that changed (for an update).
+type upsertResult struct {
+	outcome upsertOutcome
+	qty     int
+	oldQty  *int
+	fields  []string
+}
+
 // upsertItem maps one stock item to a Listing and either inserts it, updates the
 // matching existing row (by SourceID) when its fields changed, or leaves an
 // unchanged row alone. Its category is resolved from the Tally group.
-func (s *LivekeepingService) upsertItem(ctx context.Context, it stockItem, existing map[string]models.Listing) (upsertOutcome, error) {
+func (s *LivekeepingService) upsertItem(ctx context.Context, it stockItem, existing map[string]models.Listing) (upsertResult, error) {
 	name := strings.TrimSpace(it.StockItemName)
 	if name == "" {
-		return outcomeUnchanged, fmt.Errorf("item %s has no name", it.Guid)
+		return upsertResult{}, fmt.Errorf("item %s has no name", it.Guid)
 	}
 	sourceID := itemSourceID(it)
 
 	// The item's Tally "group" (parent) is the most useful category grouping.
 	catID, err := s.st.FindOrCreateCategory(ctx, it.Parent, "")
 	if err != nil {
-		return outcomeUnchanged, err
+		return upsertResult{}, err
 	}
 
 	qty := int(math.Round(parseNum(it.ClosingBalance)))
@@ -848,13 +892,14 @@ func (s *LivekeepingService) upsertItem(ctx context.Context, it stockItem, exist
 	prev, ok := existing[sourceID]
 	if !ok || sourceID == "" {
 		if err := s.db.WithContext(ctx).Create(&listing).Error; err != nil {
-			return outcomeUnchanged, err
+			return upsertResult{}, err
 		}
-		return outcomeCreated, nil
+		return upsertResult{outcome: outcomeCreated, qty: qty}, nil
 	}
 
-	if !listingChanged(prev, listing) {
-		return outcomeUnchanged, nil
+	changed := changedListingFields(prev, listing)
+	if len(changed) == 0 {
+		return upsertResult{outcome: outcomeUnchanged, qty: qty}, nil
 	}
 	// Update in place so the row's id (and any FKs to it) survive the sync.
 	updates := map[string]interface{}{
@@ -868,27 +913,48 @@ func (s *LivekeepingService) upsertItem(ctx context.Context, it stockItem, exist
 		"active":      true,
 	}
 	if err := s.db.WithContext(ctx).Model(&models.Listing{}).Where("id = ?", prev.ID).Updates(updates).Error; err != nil {
-		return outcomeUnchanged, err
+		return upsertResult{}, err
 	}
-	return outcomeUpdated, nil
+	// Surface the previous quantity only when it actually changed.
+	var oldQty *int
+	if !intPtrEqual(prev.Quantity, listing.Quantity) {
+		oldQty = prev.Quantity
+	}
+	return upsertResult{outcome: outcomeUpdated, qty: qty, oldQty: oldQty, fields: changed}, nil
 }
 
-// listingChanged reports whether the freshly-mapped item differs from the row we
-// already have, so unchanged items skip a needless write.
-func listingChanged(prev, next models.Listing) bool {
-	if prev.CategoryID != next.CategoryID ||
-		prev.Name != next.Name ||
-		prev.HSNCode != next.HSNCode ||
-		prev.Unit != next.Unit ||
-		!intPtrEqual(prev.Quantity, next.Quantity) ||
-		!floatPtrEqual(prev.Price, next.Price) {
-		return true
+// changedListingFields returns the field names that differ between the row we
+// already have and the freshly-mapped item — empty when nothing changed (so the
+// item is skipped) and used to show WHAT a re-sync altered. "stock" covers the
+// volatile Tally balances/values bundled in Data (closing value, amounts, etc.).
+func changedListingFields(prev, next models.Listing) []string {
+	var f []string
+	if prev.CategoryID != next.CategoryID {
+		f = append(f, "category")
+	}
+	if prev.Name != next.Name {
+		f = append(f, "name")
+	}
+	if prev.HSNCode != next.HSNCode {
+		f = append(f, "hsn_code")
+	}
+	if prev.Unit != next.Unit {
+		f = append(f, "unit")
+	}
+	if !intPtrEqual(prev.Quantity, next.Quantity) {
+		f = append(f, "quantity")
+	}
+	if !floatPtrEqual(prev.Price, next.Price) {
+		f = append(f, "price")
 	}
 	// Data is volatile (balances, values); compare via canonical JSON. Go sorts
 	// map keys when marshaling, so equal maps produce equal bytes.
 	pb, _ := json.Marshal(prev.Data)
 	nb, _ := json.Marshal(next.Data)
-	return !bytes.Equal(pb, nb)
+	if !bytes.Equal(pb, nb) {
+		f = append(f, "stock")
+	}
+	return f
 }
 
 func intPtrEqual(a, b *int) bool {

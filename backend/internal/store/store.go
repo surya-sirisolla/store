@@ -26,7 +26,8 @@ func (s *Store) DB() *gorm.DB { return s.db }
 
 // ── Business profile ──────────────────────────────────────────────────────────
 
-// GetBusinessProfile returns the single business profile row, or nil if unset.
+// GetBusinessProfile returns the business's profile row, or nil if unset. One
+// deployment serves one business, so there is exactly one row.
 func (s *Store) GetBusinessProfile(ctx context.Context) (*models.BusinessProfile, error) {
 	var p models.BusinessProfile
 	err := s.db.WithContext(ctx).First(&p).Error
@@ -39,44 +40,77 @@ func (s *Store) GetBusinessProfile(ctx context.Context) (*models.BusinessProfile
 	return &p, nil
 }
 
-// UpsertBusinessProfile writes the single profile row (id is forced to 1).
+// UpsertBusinessProfile writes the single profile row, creating it if absent and
+// otherwise updating it in place.
 func (s *Store) UpsertBusinessProfile(ctx context.Context, p *models.BusinessProfile) error {
-	p.ID = 1
+	var existing models.BusinessProfile
+	err := s.db.WithContext(ctx).First(&existing).Error
+	if err == nil {
+		p.ID = existing.ID
+	} else if err != gorm.ErrRecordNotFound {
+		return err
+	}
 	return s.db.WithContext(ctx).Save(p).Error
 }
 
-// ── Console auth ───────────────────────────────────────────────────────────────
+// ── Console auth (single admin account) ────────────────────────────────────────
 
-// GetOwnerPasswordHash returns the stored bcrypt hash for the console login, or
-// "" if none has been set yet.
-func (s *Store) GetOwnerPasswordHash(ctx context.Context) (string, error) {
+// GetAdmin returns the console's admin credential, or nil if it hasn't been
+// seeded yet.
+func (s *Store) GetAdmin(ctx context.Context) (*models.AuthCredential, error) {
 	var a models.AuthCredential
 	err := s.db.WithContext(ctx).First(&a).Error
 	if err == gorm.ErrRecordNotFound {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return a.PasswordHash, nil
+	return &a, nil
 }
 
-// SetOwnerPassword upserts the single console-login credential (id forced to 1).
-func (s *Store) SetOwnerPassword(ctx context.Context, hash string) error {
-	a := models.AuthCredential{ID: 1, PasswordHash: hash}
-	return s.db.WithContext(ctx).Save(&a).Error
+// EnsureAdmin seeds the single admin credential on first boot and reports
+// whether it created it. Idempotent: once the credential exists the password is
+// left alone (rotate it from the console), but a changed ADMIN_USER is applied
+// so renaming the admin doesn't require a database edit.
+func (s *Store) EnsureAdmin(ctx context.Context, username, hash string) (bool, error) {
+	username = strings.TrimSpace(username)
+
+	existing, err := s.GetAdmin(ctx)
+	if err != nil {
+		return false, err
+	}
+	if existing != nil {
+		if existing.Username != username {
+			return false, s.db.WithContext(ctx).Model(&models.AuthCredential{}).
+				Where("id = ?", existing.ID).Update("username", username).Error
+		}
+		return false, nil
+	}
+
+	a := models.AuthCredential{ID: 1, Username: username, PasswordHash: hash}
+	if err := s.db.WithContext(ctx).Create(&a).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SetAdminPassword rotates the admin's password hash.
+func (s *Store) SetAdminPassword(ctx context.Context, hash string) error {
+	return s.db.WithContext(ctx).Model(&models.AuthCredential{}).
+		Where("id = ?", 1).Update("password_hash", hash).Error
 }
 
 // ── Business locations (godowns) ───────────────────────────────────────────────
 
-// ListBusinessLocations returns every physical location, ordered by name.
+// ListBusinessLocations returns the business's physical locations, ordered by name.
 func (s *Store) ListBusinessLocations(ctx context.Context) ([]models.BusinessLocation, error) {
 	locs := []models.BusinessLocation{}
 	err := s.db.WithContext(ctx).Order("name").Find(&locs).Error
 	return locs, err
 }
 
-// GetBusinessLocation returns one location by id, or nil if it doesn't exist.
+// GetBusinessLocation returns one location by id, or nil.
 func (s *Store) GetBusinessLocation(ctx context.Context, id uint) (*models.BusinessLocation, error) {
 	var l models.BusinessLocation
 	err := s.db.WithContext(ctx).First(&l, id).Error
@@ -108,11 +142,12 @@ func (s *Store) UpdateBusinessLocation(ctx context.Context, id uint, in models.B
 
 // ── Categories ────────────────────────────────────────────────────────────────
 
-// ListCategoryTree returns top-level categories with nested children.
+// ListCategoryTree returns the top-level categories with nested children.
 func (s *Store) ListCategoryTree(ctx context.Context) ([]models.Category, error) {
 	cats := []models.Category{}
 	err := s.db.WithContext(ctx).
 		Where("parent_id IS NULL").
+		Preload("Children").
 		Preload("Children.Children").
 		Order("name").
 		Find(&cats).Error
@@ -186,10 +221,10 @@ func (s *Store) findOrCreateCategoryLevel(ctx context.Context, name string, pare
 	}
 
 	cat = models.Category{
-		Name:     name,
-		Slug:     toSlug(name),
-		ParentID: parentID,
-		Level:    level,
+		Name:       name,
+		Slug:       toSlug(name),
+		ParentID:   parentID,
+		Level:      level,
 	}
 	if err := s.db.WithContext(ctx).Create(&cat).Error; err != nil {
 		return nil, err
@@ -421,7 +456,7 @@ func (s *Store) RecordContact(ctx context.Context, phone, name, query string) {
 	err := s.db.WithContext(ctx).Where("phone = ?", phone).First(&contact).Error
 	if err == gorm.ErrRecordNotFound {
 		s.db.WithContext(ctx).Create(&models.Contact{
-			Phone: phone, DisplayName: strings.TrimSpace(name), IsStaff: isStaff,
+			Phone:      phone, DisplayName: strings.TrimSpace(name), IsStaff: isStaff,
 			Interactions: 1, LastQuery: strings.TrimSpace(query),
 			FirstSeen: now, LastSeen: now,
 		})
@@ -460,7 +495,7 @@ func (s *Store) RecentContacts(ctx context.Context, limit int, since time.Time) 
 	return out, err
 }
 
-// CountContacts counts contacts seen at/after `since` (zero = all time).
+// CountContacts counts contacts seen at/after `since` (zero = all).
 func (s *Store) CountContacts(ctx context.Context, since time.Time) int64 {
 	var n int64
 	q := s.db.WithContext(ctx).Model(&models.Contact{})
@@ -519,6 +554,21 @@ func (s *Store) FeaturedListings(ctx context.Context, limit int) ([]models.Listi
 // LogActivity records one bot tool call for the owner's monitoring view.
 func (s *Store) LogActivity(ctx context.Context, a models.BotActivity) error {
 	return s.db.WithContext(ctx).Create(&a).Error
+}
+
+// ContactActivity returns one person's bot interactions (their queries/searches/
+// requests), most recent first, so the console can show what they chatted about.
+func (s *Store) ContactActivity(ctx context.Context, phone string, limit int) ([]models.BotActivity, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	items := []models.BotActivity{}
+	err := s.db.WithContext(ctx).
+		Where("customer_phone = ?", strings.TrimSpace(phone)).
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&items).Error
+	return items, err
 }
 
 // ── Tokenization (ported from Signet) ─────────────────────────────────────────

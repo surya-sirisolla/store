@@ -178,3 +178,121 @@ func TestCategoryCounts(t *testing.T) {
 		t.Errorf("counts = %v, want Lighting:1 Fans:2", got)
 	}
 }
+
+// ── Admin credential (the console's single login) ─────────────────────────────
+
+func TestEnsureAdmin_SeedsOnceAndRenames(t *testing.T) {
+	s := New(testutil.NewDB(t))
+	ctx := context.Background()
+
+	if a, _ := s.GetAdmin(ctx); a != nil {
+		t.Fatal("expected no admin before seeding")
+	}
+
+	created, err := s.EnsureAdmin(ctx, "admin", "hash-one")
+	if err != nil || !created {
+		t.Fatalf("first EnsureAdmin: created=%v err=%v", created, err)
+	}
+
+	// Re-seeding must not create a second admin, and must NOT overwrite the
+	// password — the env value is ignored once the credential exists, so a
+	// password rotated in the console survives a restart.
+	created, err = s.EnsureAdmin(ctx, "admin", "hash-two")
+	if err != nil || created {
+		t.Fatalf("second EnsureAdmin: created=%v err=%v", created, err)
+	}
+	var count int64
+	s.DB().Model(&models.AuthCredential{}).Count(&count)
+	if count != 1 {
+		t.Fatalf("admin rows = %d, want 1", count)
+	}
+	a, _ := s.GetAdmin(ctx)
+	if a.PasswordHash != "hash-one" {
+		t.Errorf("password hash = %q, want the original 'hash-one'", a.PasswordHash)
+	}
+
+	// A changed ADMIN_USER renames the existing admin in place.
+	if _, err := s.EnsureAdmin(ctx, "owner", "hash-three"); err != nil {
+		t.Fatalf("rename EnsureAdmin: %v", err)
+	}
+	a, _ = s.GetAdmin(ctx)
+	if a.Username != "owner" {
+		t.Errorf("username = %q, want 'owner'", a.Username)
+	}
+	if a.PasswordHash != "hash-one" {
+		t.Errorf("rename changed the password hash to %q", a.PasswordHash)
+	}
+	s.DB().Model(&models.AuthCredential{}).Count(&count)
+	if count != 1 {
+		t.Errorf("admin rows after rename = %d, want 1", count)
+	}
+}
+
+func TestSetAdminPassword(t *testing.T) {
+	s := New(testutil.NewDB(t))
+	ctx := context.Background()
+
+	if _, err := s.EnsureAdmin(ctx, "admin", "old"); err != nil {
+		t.Fatalf("EnsureAdmin: %v", err)
+	}
+	if err := s.SetAdminPassword(ctx, "new"); err != nil {
+		t.Fatalf("SetAdminPassword: %v", err)
+	}
+	a, _ := s.GetAdmin(ctx)
+	if a.PasswordHash != "new" {
+		t.Errorf("password hash = %q, want 'new'", a.PasswordHash)
+	}
+}
+
+// TestBotSeesCatalog is the regression test for the "no catalog present" bug.
+// The MCP server (cmd/mcp) that backs the WhatsApp bot builds its store with a
+// plain store.New — exactly as constructed here. It used to bind to one
+// "primary business" at startup and answered from that tenant's catalog, so a
+// catalog entered under any other tenant was invisible to the bot. With
+// tenancy gone there is nothing to bind to: whatever the console writes, the
+// bot reads.
+func TestBotSeesCatalog(t *testing.T) {
+	db := testutil.NewDB(t)
+	ctx := context.Background()
+
+	// What the console writes.
+	console := New(db)
+	catID, err := console.FindOrCreateCategory(ctx, "Refrigerators", "")
+	if err != nil {
+		t.Fatalf("FindOrCreateCategory: %v", err)
+	}
+	qty := 10
+	if err := db.Create(&models.Listing{
+		CategoryID: catID, Name: "Samsung Refrigerator", Quantity: &qty, Active: true,
+	}).Error; err != nil {
+		t.Fatalf("create listing: %v", err)
+	}
+
+	// What the bot reads — a separately constructed store, as cmd/mcp does.
+	bot := New(db)
+
+	items, err := bot.SearchListings(ctx, SearchParams{Query: "refrigerator"})
+	if err != nil {
+		t.Fatalf("SearchListings: %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "Samsung Refrigerator" {
+		t.Fatalf("bot search returned %d items (%+v), want the Samsung Refrigerator", len(items), items)
+	}
+
+	counts, err := bot.CategoryCounts(ctx)
+	if err != nil {
+		t.Fatalf("CategoryCounts: %v", err)
+	}
+	if len(counts) != 1 || counts[0].Category != "Refrigerators" || counts[0].Count != 1 {
+		t.Fatalf("bot categories = %+v, want Refrigerators:1", counts)
+	}
+
+	// And the profile the bot quotes for contact details.
+	if err := console.UpsertBusinessProfile(ctx, &models.BusinessProfile{Name: "Bajaj"}); err != nil {
+		t.Fatalf("UpsertBusinessProfile: %v", err)
+	}
+	p, err := bot.GetBusinessProfile(ctx)
+	if err != nil || p == nil || p.Name != "Bajaj" {
+		t.Fatalf("bot profile = %+v (err %v), want Bajaj", p, err)
+	}
+}

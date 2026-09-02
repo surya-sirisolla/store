@@ -7,6 +7,12 @@ import (
 )
 
 type Config struct {
+	// DatabaseURL, when set, is a full Postgres connection URL (e.g. a Neon
+	// string like postgresql://user:pass@host/db?sslmode=require) and takes
+	// precedence over the discrete DB_* values below. Lets the same binary point
+	// at a managed cloud Postgres without changing code.
+	DatabaseURL string
+
 	DBHost       string
 	DBPort       string
 	DBUser       string
@@ -14,11 +20,6 @@ type Config struct {
 	DBName       string
 	Port         string
 	ClaudeAPIKey string
-
-	// The single business owner record, seeded on first boot. No login — see
-	// models.User.
-	OwnerName  string
-	OwnerEmail string
 
 	// PicoclawLogPath is the shared log file the WhatsApp bot mirrors its output
 	// to, read by the console to show pairing status + QR.
@@ -33,6 +34,11 @@ type Config struct {
 
 	// BotDisabledFile, when present, pauses the WhatsApp bot (owner toggle).
 	BotDisabledFile string
+
+	// WhatsAppResetFile, when present, tells the PicoClaw supervisor to delete
+	// the whatsmeow pairing store and restart with a fresh QR — a full "remove
+	// connection", as opposed to BotDisabledFile which only pauses.
+	WhatsAppResetFile string
 
 	// LivekeepingFile is the shared JSON file holding the Livekeeping stock-sync
 	// credentials (token + company/user ids) and last-sync bookkeeping.
@@ -53,41 +59,56 @@ type Config struct {
 	// The owner-console assistant proxies chat to its console channel.
 	PicoclawURL string
 
-	// OwnerPassword seeds the console-login password into the database on the
-	// FIRST boot only (hashed with bcrypt). After that the DB is the source of
-	// truth and this is ignored — rotate the password from the console.
-	OwnerPassword string
+	// AdminUser / AdminPassword are the console's single login, supplied at
+	// setup time the way Grafana takes GF_SECURITY_ADMIN_USER/PASSWORD. They
+	// seed the credential on the FIRST boot only (hashed with bcrypt); after
+	// that the database is the source of truth and AdminPassword is ignored —
+	// rotate it from the console's Security page. AdminPassword has no default
+	// and the server refuses to start without it, so no deployment ever runs on
+	// a well-known password.
+	AdminUser     string
+	AdminPassword string
 
-	// JWTSecret signs the session tokens issued at login.
-	JWTSecret string
+	// JWTSecret signs the session tokens issued at login. Optional: when unset,
+	// the server reads (or generates and persists) a secret at JWTSecretFile so
+	// a stock deployment needs only ADMIN_PASSWORD configured.
+	JWTSecret     string
+	JWTSecretFile string
 }
 
 func Load() *Config {
 	return &Config{
-		DBHost:           getEnv("DB_HOST", "localhost"),
-		DBPort:           getEnv("DB_PORT", "5432"),
-		DBUser:           getEnv("DB_USER", "storeuser"),
-		DBPassword:       getEnv("DB_PASSWORD", "storepass"),
-		DBName:           getEnv("DB_NAME", "storedb"),
-		Port:             getEnv("PORT", "8080"),
-		ClaudeAPIKey:     getEnv("CLAUDE_API_KEY", getEnv("ANTHROPIC_API_KEY", "")),
-		OwnerName:        getEnv("OWNER_NAME", "Owner"),
-		OwnerEmail:       getEnv("OWNER_EMAIL", "owner@business.local"),
-		PicoclawLogPath:  getEnv("PICOCLAW_LOG_PATH", "/shared/picoclaw.log"),
-		AnthropicKeyFile: getEnv("ANTHROPIC_KEY_FILE", "/shared/anthropic_key"),
-		LLMKeysFile:      getEnv("LLM_KEYS_FILE", "/shared/llm_keys.json"),
-		BotDisabledFile:  getEnv("BOT_DISABLED_FILE", "/shared/bot_disabled"),
-		LivekeepingFile:  getEnv("LIVEKEEPING_FILE", "/shared/livekeeping.json"),
-		SessionsDir:      getEnv("SESSIONS_DIR", "/picoclaw-data/workspace/sessions"),
-		SessionIdleHours: getEnvInt("SESSION_IDLE_HOURS", 24),
-		InternalToken:    getEnv("INTERNAL_TOKEN", "store-internal"),
-		PicoclawURL:      getEnv("PICOCLAW_URL", "http://picoclaw:18790"),
-		OwnerPassword:    getEnv("OWNER_PASSWORD", ""),
-		JWTSecret:        getEnv("JWT_SECRET", ""),
+		DatabaseURL:       getEnv("DATABASE_URL", ""),
+		DBHost:            getEnv("DB_HOST", "localhost"),
+		DBPort:            getEnv("DB_PORT", "5432"),
+		DBUser:            getEnv("DB_USER", "storeuser"),
+		DBPassword:        getEnv("DB_PASSWORD", "storepass"),
+		DBName:            getEnv("DB_NAME", "storedb"),
+		Port:              getEnv("PORT", "8080"),
+		ClaudeAPIKey:      getEnv("CLAUDE_API_KEY", getEnv("ANTHROPIC_API_KEY", "")),
+		PicoclawLogPath:   getEnv("PICOCLAW_LOG_PATH", "/shared/picoclaw.log"),
+		AnthropicKeyFile:  getEnv("ANTHROPIC_KEY_FILE", "/shared/anthropic_key"),
+		LLMKeysFile:       getEnv("LLM_KEYS_FILE", "/shared/llm_keys.json"),
+		BotDisabledFile:   getEnv("BOT_DISABLED_FILE", "/shared/bot_disabled"),
+		WhatsAppResetFile: getEnv("WHATSAPP_RESET_FILE", "/shared/whatsapp_reset"),
+		LivekeepingFile:   getEnv("LIVEKEEPING_FILE", "/shared/livekeeping.json"),
+		SessionsDir:       getEnv("SESSIONS_DIR", "/picoclaw-data/workspace/sessions"),
+		SessionIdleHours:  getEnvInt("SESSION_IDLE_HOURS", 24),
+		InternalToken:     getEnv("INTERNAL_TOKEN", "store-internal"),
+		PicoclawURL:       getEnv("PICOCLAW_URL", "http://picoclaw:18790"),
+		AdminUser:         getEnv("ADMIN_USER", "admin"),
+		AdminPassword:     getEnv("ADMIN_PASSWORD", ""),
+		JWTSecret:         getEnv("JWT_SECRET", ""),
+		JWTSecretFile:     getEnv("JWT_SECRET_FILE", "/shared/jwt_secret"),
 	}
 }
 
+// DSN returns the Postgres connection string. A DATABASE_URL (e.g. Neon) wins;
+// otherwise it's assembled from the discrete DB_* values for a local install.
 func (c *Config) DSN() string {
+	if c.DatabaseURL != "" {
+		return c.DatabaseURL
+	}
 	return fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable TimeZone=UTC",
 		c.DBHost, c.DBPort, c.DBUser, c.DBPassword, c.DBName,

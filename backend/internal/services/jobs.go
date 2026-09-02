@@ -440,6 +440,10 @@ func (s *JobService) runLivekeeping(ctx context.Context) (models.JSONB, string, 
 		"locations_created": res.LocationsCreated,
 		"locations_updated": res.LocationsUpdated,
 		"locations_deleted": res.LocationsDeleted,
+		// What actually changed (names, capped) so the console can show detail.
+		"created_items": res.CreatedItems,
+		"updated_items": res.UpdatedItems,
+		"deleted_items": res.DeletedItems,
 	}
 	return result, msg, nil
 }

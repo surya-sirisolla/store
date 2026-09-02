@@ -7,16 +7,20 @@ import {
 } from "@/lib/api";
 import {
   Puzzle, Boxes, RefreshCw, Play, CheckCircle2, XCircle, Clock,
-  ShieldCheck, ShieldAlert, ShieldQuestion, Building2, List, MapPin, Link2,
+  ShieldCheck, ShieldAlert, ShieldQuestion, Building2, List, MapPin, Link2, ChevronDown,
 } from "lucide-react";
 
 const inputCls = "w-full bg-panel-2 border border-line rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/40";
 
 const LIVEKEEPING_KEY = "livekeeping_sync";
 
+interface ChangedItem { name: string; qty?: number; old_qty?: number; fields?: string[] }
 interface JobResult {
   total?: number; fetched?: number; created?: number; updated?: number; deleted?: number; errors?: number;
   locations_created?: number; locations_updated?: number; locations_deleted?: number;
+  created_items?: ChangedItem[];
+  updated_items?: ChangedItem[];
+  deleted_items?: string[];
 }
 interface Job {
   key: string;
@@ -92,6 +96,127 @@ function PullToggle({
         className="accent-accent mt-1 shrink-0"
       />
     </label>
+  );
+}
+
+// fieldLabel maps an internal changed-field key to a friendlier label.
+function fieldLabel(f: string): string {
+  const map: Record<string, string> = {
+    stock: "stock/values", hsn_code: "HSN", category: "category",
+    name: "name", unit: "unit", quantity: "quantity", price: "price",
+  };
+  return map[f] ?? f;
+}
+
+// QtyTag shows an item's quantity — "qty N", or "qty A → B" when it changed.
+function QtyTag({ it }: { it: ChangedItem }) {
+  if (it.qty === undefined || it.qty === null) return null;
+  const changed = it.old_qty !== undefined && it.old_qty !== null && it.old_qty !== it.qty;
+  return (
+    <span className="text-[11px] font-mono text-ink whitespace-nowrap shrink-0">
+      {changed ? <>qty <span className="text-subtle">{it.old_qty} →</span> {it.qty}</> : <>qty {it.qty}</>}
+    </span>
+  );
+}
+
+// NameList renders a titled, scrollable list of item names (for Removed).
+function NameList({ title, tone, names, total }: { title: string; tone: "emerald" | "red"; names: string[]; total: number }) {
+  const dot = tone === "emerald" ? "bg-emerald-500" : "bg-red-500";
+  return (
+    <div className="bg-panel-2/50 border border-line rounded-lg p-3">
+      <p className="text-xs font-medium text-ink mb-1.5 flex items-center gap-1.5">
+        <span className={`w-1.5 h-1.5 rounded-full ${dot}`} /> {title} ({total})
+      </p>
+      {names.length === 0 ? (
+        <p className="text-xs text-subtle">None</p>
+      ) : (
+        <div className="max-h-52 overflow-auto space-y-0.5 pr-1">
+          {names.map((n, i) => <p key={i} className="text-xs text-muted truncate" title={n}>{n || "(unnamed)"}</p>)}
+          {total > names.length && <p className="text-[10px] text-subtle pt-1">…showing first {names.length}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ItemQtyList renders items with their quantity (for New) — name + qty.
+function ItemQtyList({ title, items, total }: { title: string; items: ChangedItem[]; total: number }) {
+  return (
+    <div className="bg-panel-2/50 border border-line rounded-lg p-3">
+      <p className="text-xs font-medium text-ink mb-1.5 flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> {title} ({total})
+      </p>
+      {items.length === 0 ? (
+        <p className="text-xs text-subtle">None</p>
+      ) : (
+        <div className="max-h-52 overflow-auto space-y-0.5 pr-1">
+          {items.map((it, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-muted truncate" title={it.name}>{it.name || "(unnamed)"}</span>
+              <QtyTag it={it} />
+            </div>
+          ))}
+          {total > items.length && <p className="text-[10px] text-subtle pt-1">…showing first {items.length}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// UpdatedList renders updated items with their quantity and the fields changed.
+function UpdatedList({ items, total }: { items: ChangedItem[]; total: number }) {
+  return (
+    <div className="bg-panel-2/50 border border-line rounded-lg p-3">
+      <p className="text-xs font-medium text-ink mb-1.5 flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Updated ({total})
+      </p>
+      {items.length === 0 ? (
+        <p className="text-xs text-subtle">None</p>
+      ) : (
+        <div className="max-h-52 overflow-auto space-y-1.5 pr-1">
+          {items.map((it, i) => (
+            <div key={i} className="text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted truncate" title={it.name}>{it.name || "(unnamed)"}</span>
+                <QtyTag it={it} />
+              </div>
+              {it.fields && it.fields.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-0.5">
+                  {it.fields.map((f) => (
+                    <span key={f} className="text-[10px] bg-panel border border-line rounded px-1 py-0.5 text-subtle">{fieldLabel(f)}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+          {total > items.length && <p className="text-[10px] text-subtle pt-1">…showing first {items.length}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// SyncChanges is the expandable "what changed" panel for the last sync.
+function SyncChanges({ res }: { res: JobResult }) {
+  const [open, setOpen] = useState(false);
+  const created = res.created_items ?? [];
+  const updated = res.updated_items ?? [];
+  const deleted = res.deleted_items ?? [];
+  if (created.length + updated.length + deleted.length === 0) return null;
+  return (
+    <div className="mt-2">
+      <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1 text-xs text-accent hover:underline">
+        <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+        {open ? "Hide changed items" : "Show changed items"}
+      </button>
+      {open && (
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <ItemQtyList title="New" items={created} total={res.created ?? created.length} />
+          <UpdatedList items={updated} total={res.updated ?? updated.length} />
+          <NameList title="Removed" tone="red" names={deleted} total={res.deleted ?? deleted.length} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -210,6 +335,7 @@ function LivekeepingExtension() {
             {typeof res.errors === "number" && res.errors > 0 && <span className="text-danger">{res.errors} skipped</span>}
           </div>
         )}
+        {res && job?.last_status !== "running" && <SyncChanges res={res} />}
         {runMsg && <p className="text-sm text-danger mt-1">{runMsg}</p>}
       </div>
 

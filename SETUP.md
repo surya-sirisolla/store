@@ -22,27 +22,68 @@ Docker runs the whole system for you. Download and install it:
 
 ---
 
-## Step 2 — Add your Anthropic (Claude) key
+## Step 2 — Create your database
 
-The bot uses Claude to understand messages. Get a key:
+Your business data lives in a **Postgres database**, which is not included in this
+system — you point it at one you own. The free tier of
+[Neon](https://neon.tech) is the easiest option and takes about two minutes:
 
-1. Go to https://console.anthropic.com → **API Keys** → **Create Key**.
-2. Copy the key (it starts with `sk-ant-...`).
-
-Now, in this folder:
-
-1. Find the file **`.env.example`**. Make a copy of it and rename the copy to **`.env`**.
-2. Open `.env` in any text editor (Notepad, TextEdit, VS Code).
-3. Paste your key after `ANTHROPIC_API_KEY=` like this:
+1. Go to https://neon.tech and sign up (free).
+2. Create a project. Any name and region is fine — pick a region near you.
+3. On the project dashboard, find the **connection string**. It looks like:
    ```
-   ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxx
+   postgresql://user:password@ep-something.aws.neon.tech/neondb?sslmode=require
    ```
-4. (Optional) Change `OWNER_NAME` / `OWNER_EMAIL` — just labels shown in the console, no login involved.
-5. Save the file.
+4. **Copy it.** You'll paste it into your settings file in the next step.
+
+> Already have a Postgres database (RDS, or one you run yourself)? Use its
+> connection string instead — nothing else changes.
 
 ---
 
-## Step 3 — Start everything
+## Step 3 — Create your settings file
+
+In this folder:
+
+1. Find the file **`.env.example`**. Make a copy of it and rename the copy to **`.env`**.
+2. Open `.env` in any text editor (Notepad, TextEdit, VS Code).
+
+Now fill in three things.
+
+**a) Your database** — paste the connection string from Step 2:
+
+```
+DATABASE_URL=postgresql://user:password@ep-something.aws.neon.tech/neondb?sslmode=require
+```
+
+**b) Your Claude key** — the bot uses Claude to understand messages. Go to
+https://console.anthropic.com → **API Keys** → **Create Key**, copy it (it starts
+with `sk-ant-...`), and paste it:
+
+```
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxx
+```
+
+**c) Your console password** — this is what you'll use to sign in:
+
+```
+ADMIN_USER=admin
+ADMIN_PASSWORD=pick-a-long-password-here
+```
+
+Then **save the file**.
+
+> `DATABASE_URL` and `ADMIN_PASSWORD` are both **required** — the system refuses
+> to start without them, on purpose, so your console is never left open with a
+> default password. `ADMIN_USER` can stay `admin` if you like.
+
+> You only set the password here once. After the first start it's stored (safely
+> hashed) in the database, and you change it later from the console's
+> **Security** page instead of this file.
+
+---
+
+## Step 4 — Start everything
 
 Open a terminal **in this folder** and run **one command**:
 
@@ -59,10 +100,11 @@ docker compose ps
 
 ---
 
-## Step 4 — Add your business info & products
+## Step 5 — Add your business info & products
 
 1. Open your browser to **http://localhost:3000**
-2. Log in with the email/password you set in `.env`.
+2. Log in with the **username** (`admin` unless you changed it) and the
+   **password** you set in `.env`.
 3. Go to **Business Profile** → fill in your name, address, hours, phone → **Save**.
 4. Go to **Categories** → add a few categories (e.g. "Fans", "Lighting").
 5. Go to **Listings** → add your products/services, OR use **Bulk Upload** to
@@ -70,7 +112,7 @@ docker compose ps
 
 ---
 
-## Step 5 — Connect WhatsApp (scan once, from the console)
+## Step 6 — Connect WhatsApp (scan once, from the console)
 
 1. In the web console, open the **WhatsApp** page (left menu).
 2. A **QR code** appears on screen, with a live status.
@@ -85,7 +127,7 @@ docker compose ps
 
 ---
 
-## Step 6 — Test it
+## Step 7 — Test it
 
 - From another phone, send a WhatsApp message to your number, e.g.
   *"Do you have ceiling fans?"*
@@ -109,6 +151,13 @@ docker compose ps
 
 ## Troubleshooting
 
+- **Says `set DATABASE_URL in .env` and won't start?** Your `DATABASE_URL` line is
+  missing or empty. Go back to Step 2 and Step 3 — the system has no database of
+  its own and can't start without one.
+- **Won't start, mentions `ADMIN_PASSWORD`?** You left the password blank. Set it
+  in `.env` and run `docker compose up -d` again.
+- **Can't log in?** Sign in with the **username** (`admin` by default), not an
+  email address.
 - **Port already in use?** Edit the `FRONTEND_PORT` / `BACKEND_PORT` values in `.env`,
   then run `docker compose up -d` again.
 - **Bot doesn't reply?** Make sure your `ANTHROPIC_API_KEY` in `.env` is correct,

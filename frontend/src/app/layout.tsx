@@ -11,7 +11,7 @@ const poppins = Poppins({
 
 export const metadata: Metadata = {
   title: "Store Platform",
-  description: "Multi-tenant business directory",
+  description: "Business directory + WhatsApp agent console",
 };
 
 export default function RootLayout({

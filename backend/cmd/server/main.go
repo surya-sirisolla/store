@@ -1,9 +1,13 @@
-// Command server runs the Owner-console HTTP API for the single-tenant store.
+// Command server runs the Owner-console HTTP API. One deployment serves one
+// business, with a single admin login configured at setup time.
 package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -11,7 +15,6 @@ import (
 	"store/backend/internal/config"
 	"store/backend/internal/db"
 	"store/backend/internal/handlers"
-	"store/backend/internal/models"
 	"store/backend/internal/secrets"
 	"store/backend/internal/services"
 	"store/backend/internal/store"
@@ -19,27 +22,28 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-	"gorm.io/gorm"
 )
 
 func main() {
 	godotenv.Load()
 
 	cfg := config.Load()
-	requireAuthSecrets(cfg)
+	// Validate the setup-time config before touching the database, so a missing
+	// password fails on a fresh install without having migrated anything.
+	requireAdminPassword(cfg)
+	resolveJWTSecret(cfg)
 	database := db.Connect(cfg.DSN())
-	seedOwner(database, cfg)
 
 	// Carry over a key set under the old single-Anthropic-key flow.
 	secrets.MigrateLegacyKey(cfg.AnthropicKeyFile, cfg.LLMKeysFile)
 
 	st := store.New(database)
-	// Seed the console-login password into the DB on first boot (then the DB is
-	// the source of truth — rotate it from the console).
-	bootstrapOwnerPassword(st, cfg)
+	// Seed the console's single admin login from ADMIN_USER/ADMIN_PASSWORD.
+	seedAdmin(st, cfg)
 	// Resolve the Claude key at call time for the AI extraction feature: the
 	// owner-set keys file wins (primary or fallback claude key), else env.
 	keyFunc := func() string { return secrets.ReadAnthropic(cfg.LLMKeysFile) }
+
 	claude := services.NewClaudeService(keyFunc)
 	excel := services.NewExcelService(database, claude)
 	aiImport := services.NewAIImportService(st, claude)
@@ -56,7 +60,7 @@ func main() {
 	broadcastH := handlers.NewBroadcastHandler(sender)
 	bulkH := handlers.NewBulkHandler(database, excel, aiImport)
 	aiImportH := handlers.NewAIImportHandler(aiImport)
-	waH := handlers.NewWhatsAppHandler(cfg.PicoclawLogPath, cfg.LLMKeysFile, cfg.BotDisabledFile)
+	waH := handlers.NewWhatsAppHandler(cfg.PicoclawLogPath, cfg.LLMKeysFile, cfg.BotDisabledFile, cfg.WhatsAppResetFile)
 	settingsH := handlers.NewSettingsHandler(cfg.LLMKeysFile)
 	ingestH := handlers.NewIngestHandler(st, cfg.InternalToken)
 	assistantH := handlers.NewAssistantHandler(cfg.PicoclawURL, cfg.InternalToken)
@@ -78,10 +82,13 @@ func main() {
 	// token it issues. Rate-limited per IP to blunt brute-force attempts.
 	r.POST("/api/auth/login", handlers.RateLimit(10, 5*time.Minute), authH.Login)
 
-	// Single-operator console, gated behind the shared admin password.
+	// Console API — every route requires a valid session token.
 	api := r.Group("/api")
 	api.Use(handlers.RequireAuth(cfg.JWTSecret))
 	{
+		// Who am I — the console reads this on load.
+		api.GET("/me", authH.Me)
+
 		api.GET("/stats", consoleH.Stats)
 
 		api.GET("/categories", consoleH.ListCategories)
@@ -138,9 +145,11 @@ func main() {
 		api.GET("/bot/stats", consoleH.BotStats)
 		api.GET("/bot/activity", consoleH.BotActivityFeed)
 		api.GET("/bot/contacts", consoleH.BotContacts)
+		api.GET("/bot/contact-activity", consoleH.BotContactActivity)
 		api.GET("/bot/whatsapp/status", waH.Status)
 		api.POST("/bot/whatsapp/enable", waH.Enable)
 		api.POST("/bot/whatsapp/disable", waH.Disable)
+		api.POST("/bot/whatsapp/remove", waH.Remove)
 
 		// Customer alerts (waitlist + restock-ready). List/counts/status/re-check.
 		api.GET("/alerts", alertsH.List)
@@ -166,61 +175,61 @@ func main() {
 	}
 }
 
-// requireAuthSecrets fails fast without a stable signing secret — generating one
-// ephemerally would either be guessable or change (and invalidate every session)
-// on restart. The login password lives in the DB and is handled separately by
-// bootstrapOwnerPassword.
-func requireAuthSecrets(cfg *config.Config) {
-	if cfg.JWTSecret == "" {
-		log.Fatal("JWT_SECRET is not set. Set it in .env before starting the console, e.g.: openssl rand -hex 32")
+// requireAdminPassword refuses to start without a console password. There is no
+// default, so a deployment can never come up on a well-known credential the way
+// it could when the super-admin password fell back to a hardcoded value.
+func requireAdminPassword(cfg *config.Config) {
+	if strings.TrimSpace(cfg.AdminPassword) == "" {
+		log.Fatal("ADMIN_PASSWORD is not set. Choose the console's admin password in .env before starting, " +
+			"e.g.: ADMIN_PASSWORD=some-long-passphrase (and optionally ADMIN_USER, which defaults to \"admin\").")
 	}
 }
 
-// bootstrapOwnerPassword seeds the console-login password into the database on
-// first boot from OWNER_PASSWORD, after which the DB is the source of truth
-// (env is ignored and the owner rotates it from the console). Fatals if no
-// password has ever been set and none is provided to seed one.
-func bootstrapOwnerPassword(st *store.Store, cfg *config.Config) {
-	ctx := context.Background()
-	hash, err := st.GetOwnerPasswordHash(ctx)
-	if err != nil {
-		log.Fatalf("checking console password: %v", err)
+// resolveJWTSecret settles the session-signing secret. An explicit JWT_SECRET
+// wins; otherwise the secret is read from (or generated once and persisted to)
+// JWTSecretFile on the shared volume, so a stock deployment needs only
+// ADMIN_PASSWORD configured and sessions still survive a restart. Only a
+// secret that can neither be read nor written is fatal — an ephemeral one would
+// silently invalidate every session on each restart.
+func resolveJWTSecret(cfg *config.Config) {
+	if strings.TrimSpace(cfg.JWTSecret) != "" {
+		return
 	}
-	if hash != "" {
-		return // already set — the DB wins, OWNER_PASSWORD is ignored
+	if b, err := os.ReadFile(cfg.JWTSecretFile); err == nil && len(strings.TrimSpace(string(b))) > 0 {
+		cfg.JWTSecret = strings.TrimSpace(string(b))
+		return
 	}
-	if strings.TrimSpace(cfg.OwnerPassword) == "" {
-		log.Fatal("No console password is set. Set OWNER_PASSWORD in .env for the first boot; it will be stored (hashed) in the database, and you can rotate it from the console afterwards.")
+
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		log.Fatalf("generating a session secret: %v", err)
 	}
-	h, err := auth.HashPassword(cfg.OwnerPassword)
-	if err != nil {
-		log.Fatalf("hashing console password: %v", err)
+	secret := hex.EncodeToString(buf)
+	if err := os.WriteFile(cfg.JWTSecretFile, []byte(secret), 0o600); err != nil {
+		log.Fatalf("JWT_SECRET is not set and a generated one could not be saved to %s: %v\n"+
+			"Set JWT_SECRET in .env instead, e.g.: openssl rand -hex 32", cfg.JWTSecretFile, err)
 	}
-	if err := st.SetOwnerPassword(ctx, h); err != nil {
-		log.Fatalf("storing console password: %v", err)
-	}
-	log.Println("Console password seeded into the database from OWNER_PASSWORD.")
+	cfg.JWTSecret = secret
+	log.Printf("generated a session secret and saved it to %s", cfg.JWTSecretFile)
 }
 
-// seedOwner creates the single owner record on first boot from env config. It
-// just labels who the owner is for staff stats and lets the owner's own
-// phone (set later under Staff/Business Profile) be recognized by the bot
-// like any other staff number — login is gated separately by OWNER_PASSWORD.
-func seedOwner(database *gorm.DB, cfg *config.Config) {
-	var count int64
-	database.Model(&models.User{}).Where("role = ?", models.RoleOwner).Count(&count)
-	if count > 0 {
-		return
+// seedAdmin creates the console's single admin login on first boot from
+// ADMIN_USER/ADMIN_PASSWORD, the way Grafana takes its admin credentials. It is
+// idempotent: once the credential exists the env password is ignored (rotate it
+// from the console's Security page), though a changed ADMIN_USER is applied.
+//
+// ADMIN_PASSWORD has no default and is required, so a deployment can never come
+// up on a well-known password.
+func seedAdmin(st *store.Store, cfg *config.Config) {
+	hash, err := auth.HashPassword(cfg.AdminPassword)
+	if err != nil {
+		log.Fatalf("hashing the admin password: %v", err)
 	}
-	owner := models.User{
-		Name:   cfg.OwnerName,
-		Email:  cfg.OwnerEmail,
-		Role:   models.RoleOwner,
-		Active: true,
+	created, err := st.EnsureAdmin(context.Background(), cfg.AdminUser, hash)
+	if err != nil {
+		log.Fatalf("seeding the admin account: %v", err)
 	}
-	if err := database.Create(&owner).Error; err != nil {
-		log.Printf("seed owner: %v", err)
-		return
+	if created {
+		log.Printf("seeded console admin %q", cfg.AdminUser)
 	}
-	log.Printf("seeded owner: %s", cfg.OwnerEmail)
 }

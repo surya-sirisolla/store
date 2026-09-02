@@ -41,12 +41,16 @@ func NewDB(t *testing.T) *gorm.DB {
 
 	if err := db.AutoMigrate(
 		&models.User{},
+		&models.AuthCredential{},
 		&models.BusinessProfile{},
+		&models.BusinessLocation{},
 		&models.Category{},
 		&models.Listing{},
 		&models.AlertRequest{},
 		&models.BotActivity{},
 		&models.BulkUploadJob{},
+		&models.Contact{},
+		&models.ScheduledJob{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -60,8 +64,9 @@ func truncateAll(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	// Order respects nothing thanks to CASCADE + RESTART IDENTITY.
 	err := db.Exec(`TRUNCATE TABLE
-		users, business_profiles, categories, listings,
-		alert_requests, bot_activities, bulk_upload_jobs
+		users, auth_credentials, business_profiles, business_locations,
+		categories, listings, alert_requests, bot_activities,
+		bulk_upload_jobs, contacts, scheduled_jobs
 		RESTART IDENTITY CASCADE`).Error
 	if err != nil {
 		t.Fatalf("truncate: %v", err)

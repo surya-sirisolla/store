@@ -34,13 +34,13 @@ func (h *AlertsHandler) List(c *gin.Context) {
 		q = q.Where("status = ?", status)
 	}
 	q.Limit(300).Find(&items)
-	h.attachListings(items)
+	h.attachListings(c, items)
 	c.JSON(http.StatusOK, items)
 }
 
 // attachListings fills MatchedListing for any alert that links one, in a single
 // query.
-func (h *AlertsHandler) attachListings(items []models.AlertRequest) {
+func (h *AlertsHandler) attachListings(c *gin.Context, items []models.AlertRequest) {
 	ids := []uint{}
 	for _, a := range items {
 		if a.ListingID != nil {

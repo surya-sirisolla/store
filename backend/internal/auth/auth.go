@@ -1,6 +1,7 @@
-// Package auth issues and verifies the owner-console session token. There is
-// a single operator (no user accounts to manage) so login is just "the
-// correct shared password in, a signed token out."
+// Package auth issues and verifies console session tokens. The console has a
+// single admin login (one deployment serves one business), so a signed JWT
+// carries nothing but that admin's username — there are no roles or tenants to
+// authorize against.
 package auth
 
 import (
@@ -12,6 +13,13 @@ import (
 )
 
 const sessionTTL = 24 * time.Hour
+
+// Claims is the payload of a session token: the standard registered claims
+// (expiry, issued-at, subject) plus the admin's username.
+type Claims struct {
+	jwt.RegisteredClaims
+	Username string `json:"username"`
+}
 
 // HashPassword returns a bcrypt hash of the password, suitable for storing in
 // the database. (bcrypt only uses the first 72 bytes of the input.)
@@ -29,26 +37,32 @@ func CheckHash(pw, hash string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
 }
 
-// IssueToken returns a signed session token valid for sessionTTL.
-func IssueToken(secret string) (string, error) {
-	claims := jwt.RegisteredClaims{
-		Subject:   "owner",
-		IssuedAt:  jwt.NewNumericDate(time.Now()),
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(sessionTTL)),
+// IssueToken returns a signed session token identifying the admin, valid for
+// sessionTTL.
+func IssueToken(secret, username string) (string, error) {
+	claims := Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   username,
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(sessionTTL)),
+		},
+		Username: username,
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 }
 
-// VerifyToken checks the signature and expiry of a session token.
-func VerifyToken(token, secret string) error {
-	parsed, err := jwt.ParseWithClaims(token, &jwt.RegisteredClaims{}, func(t *jwt.Token) (interface{}, error) {
+// ParseToken checks the signature and expiry of a session token and returns its
+// claims.
+func ParseToken(token, secret string) (*Claims, error) {
+	claims := &Claims{}
+	parsed, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
 		}
 		return []byte(secret), nil
 	})
 	if err != nil || !parsed.Valid {
-		return errors.New("invalid or expired session")
+		return nil, errors.New("invalid or expired session")
 	}
-	return nil
+	return claims, nil
 }

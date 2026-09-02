@@ -59,7 +59,7 @@ func (s *AIImportService) Import(ctx context.Context, rawText string) (*ImportRe
 	}
 
 	result := &ImportResult{}
-	s.insertItems(ctx, items, result)
+	s.insertItems(ctx, s.st, items, result)
 	return result, nil
 }
 
@@ -112,6 +112,7 @@ func (s *AIImportService) importExcelBytes(ctx context.Context, fileBytes []byte
 	headers := rows[0]
 	dataRows := rows[1:]
 	result := &ImportResult{}
+	st := s.st
 
 	for start := 0; start < len(dataRows); start += excelBatchSize {
 		end := start + excelBatchSize
@@ -124,7 +125,7 @@ func (s *AIImportService) importExcelBytes(ctx context.Context, fileBytes []byte
 			result.Errors = append(result.Errors, fmt.Sprintf("rows %d-%d: %v", start+2, end+1, err))
 			continue
 		}
-		s.insertItems(ctx, items, result)
+		s.insertItems(ctx, st, items, result)
 	}
 
 	return result, len(dataRows), nil
@@ -182,7 +183,7 @@ func (s *AIImportService) extractItems(text string) ([]extractedItem, error) {
 
 // insertItems resolves categories/sub-categories and inserts each extracted
 // item, tallying outcomes into result.
-func (s *AIImportService) insertItems(ctx context.Context, items []extractedItem, result *ImportResult) {
+func (s *AIImportService) insertItems(ctx context.Context, st *store.Store, items []extractedItem, result *ImportResult) {
 	for _, item := range items {
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
@@ -190,7 +191,7 @@ func (s *AIImportService) insertItems(ctx context.Context, items []extractedItem
 			continue
 		}
 
-		catID, err := s.st.FindOrCreateCategory(ctx, item.Category, item.SubCategory)
+		catID, err := st.FindOrCreateCategory(ctx, item.Category, item.SubCategory)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
 			continue
@@ -209,7 +210,7 @@ func (s *AIImportService) insertItems(ctx context.Context, items []extractedItem
 			listing.Quantity = &q
 		}
 
-		if err := s.st.DB().WithContext(ctx).Create(&listing).Error; err != nil {
+		if err := st.DB().WithContext(ctx).Create(&listing).Error; err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}

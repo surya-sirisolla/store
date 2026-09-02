@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -48,6 +49,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("connect postgres: %v", err)
 	}
+	// One deployment serves one business, so the bot reads the whole catalog —
+	// there is no tenant to resolve and therefore no way to bind to the wrong one.
 	st := store.New(database)
 
 	s := server.NewMCPServer("store-directory", "1.0.0",
@@ -63,9 +66,22 @@ func main() {
 
 	registerTools(s, st)
 
+	// Serve the MCP endpoint alongside a plain health probe. PicoClaw connects
+	// once at startup and does NOT retry if the MCP server isn't listening yet —
+	// it logs "MCP tools will not be available" and runs without the catalog for
+	// the rest of its life. /healthz lets compose gate PicoClaw on this server
+	// actually being ready instead of merely started.
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", server.NewStreamableHTTPServer(s))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
 	addr := ":" + getEnv("MCP_PORT", "9090")
 	log.Printf("store-mcp (streamable HTTP) listening on %s/mcp", addr)
-	if err := server.NewStreamableHTTPServer(s).Start(addr); err != nil {
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
 }
@@ -124,7 +140,7 @@ func registerTools(s *server.MCPServer, st *store.Store) {
 
 	// search_listings ────────────────────────────────────────────────────────────
 	s.AddTool(mcp.NewTool("search_listings",
-		mcp.WithDescription("Search the business's directory. Match listings by free-text keyword and/or an exact category. Returns matching listings; price and stock quantity are included only for staff/owner callers — for customers the result is name/category/description plus a contact number for price & availability, and out-of-stock items are hidden from customers entirely."),
+		mcp.WithDescription("Search the business's directory. Match listings by free-text keyword and/or an exact category. Returns matching listings; price and stock quantity are included only for staff/owner callers. For customers the result is name/category/description plus an `in_stock` flag (true/false — never the raw number) and a contact number for price & availability."),
 		mcp.WithString("query", mcp.Description("Free-text keyword, e.g. 'ceiling fan', 'cardiologist', '2.5 sq mm wire'.")),
 		mcp.WithString("category", mcp.Description("Exact category filter. Use list_categories for valid values.")),
 		mcp.WithString("limit", mcp.Description("Max results as a string, e.g. \"20\" (default 20).")),
@@ -137,9 +153,8 @@ func registerTools(s *server.MCPServer, st *store.Store) {
 			Query:    query,
 			Category: req.GetString("category", ""),
 			Limit:    int(parseIntArg(req.GetString("limit", ""), 20)),
-			// Customers only ever see items that are actually in stock; staff/owner
-			// see everything (including out-of-stock) for inventory management.
-			InStock: !isStaff,
+			// Customers now see all matches (including out-of-stock); the bot logs
+			// demand for out-of-stock ones instead of hiding them.
 		})
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -163,13 +178,16 @@ func registerTools(s *server.MCPServer, st *store.Store) {
 			if strings.TrimSpace(l.Description) != "" {
 				m["description"] = l.Description
 			}
+			// Stock STATUS only, never the number: unknown quantity (a service) is
+			// treated as available; 0 or negative is out of stock.
+			m["in_stock"] = l.Quantity == nil || *l.Quantity > 0
 			safe = append(safe, m)
 		}
 		resp := map[string]any{
 			"count":    len(safe),
 			"listings": safe,
 			"viewer":   "customer",
-			"policy":   "Do NOT state any price or stock quantity to this customer — that information is intentionally not included here. For price and availability, tell them to contact the business.",
+			"policy":   "Do NOT state any price or stock NUMBER to this customer. Each item has an `in_stock` flag. If in_stock is false, the item isn't currently in stock: briefly tell the customer it can be arranged, and call request_alert to log their interest (their WhatsApp number is filled in automatically). For price and exact availability, tell them to contact the business.",
 		}
 		if p, _ := st.GetBusinessProfile(ctx); p != nil {
 			if c := businessContact(p); c != "" {
@@ -193,7 +211,7 @@ func registerTools(s *server.MCPServer, st *store.Store) {
 
 	// request_alert ───────────────────────────────────────────────────────────────
 	s.AddTool(mcp.NewTool("request_alert",
-		mcp.WithDescription("Record a customer's request to be notified when something the business can't currently supply becomes available. Call this ONLY after the customer clearly agrees to be notified. The phone number defaults to this WhatsApp chat, so you usually only need item_query — ask for the name if it isn't already clear, but you do not need to ask for their number."),
+		mcp.WithDescription("Record a customer's interest in something the business can't currently supply, so the owner sees the demand and the customer can be notified when it's back. Call this (a) whenever a customer asks about an item whose in_stock flag is false — log it automatically, no need to ask first (use source 'bot_offered') — or (b) when the customer explicitly asks to be notified (source 'customer_asked'). The phone number defaults to this WhatsApp chat, so you usually only need item_query — you do not need to ask for their number."),
 		mcp.WithString("item_query", mcp.Required(), mcp.Description("What the customer asked for, in plain words, e.g. 'Havells ceiling fan'.")),
 		mcp.WithString("customer_name", mcp.Description("The customer's name, if they gave it.")),
 		mcp.WithString("customer_phone", mcp.Description("Phone to alert. Leave blank to use this WhatsApp chat's number (preferred). Only set this if the customer asks to be notified on a different number.")),
@@ -276,7 +294,8 @@ func registerStaffTools(s *server.MCPServer, st *store.Store) {
 			return denied, nil
 		}
 		alerts := []models.AlertRequest{}
-		st.DB().WithContext(ctx).Where("status = ?", "logged").Order("created_at DESC").Limit(50).Find(&alerts)
+		st.DB().WithContext(ctx).Where("status = ?", "logged").
+			Order("created_at DESC").Limit(50).Find(&alerts)
 		logActivity(st, "staff_pending_alerts", "", fmt.Sprintf("%d pending", len(alerts)), callerPhone(req))
 		return jsonResult(map[string]any{"count": len(alerts), "alerts": alerts})
 	})
